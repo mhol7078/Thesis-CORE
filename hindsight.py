@@ -49,8 +49,13 @@ if __name__ == '__main__':
                        numIter=30,
                        epsIter=0.01)
 
+    netParams = dict(nodeType='Slave',
+                     port=42680,
+                     maxQueueSize=15)
+
     # Initialise Local Camera
-    myCam = CamHandler(1)
+    myCam = CamHandler(0)
+    myCam.start()
 
     # Undertake calibration
     myCam.calibrate_int(**calibParams)
@@ -76,17 +81,18 @@ if __name__ == '__main__':
 
         # Run update stage if update increment has elapsed
         if localMode.tracker.update_stage_elapsed():
-            localMode.new_obs_from_im(myCam.frame)
+            localMode.new_obs_from_im(myCam.current_frame())
             localMode.tracker.update(localMode.currObs)
 
         # Push latest filter estimate to image window along with new image
-        cv2.circle(myCam.frame, (localMode.tracker.x[0], localMode.tracker.x[1]), 10, (0, 255, 0), 1)
-        cv2.imshow('Filter Test', myCam.frame)
+        cv2.circle(myCam.current_frame(), (localMode.tracker.x[0], localMode.tracker.x[1]), 10, (0, 255, 0), 1)
+        cv2.imshow('Filter Test', myCam.current_frame())
 
         # Check for termination
         if cv2.waitKey(1) & 0xFF == ord(' '):
+            # Close up and return
+            myCam.stop()
+            while myCam.isAlive():
+                pass
+            cv2.destroyAllWindows()
             break
-
-    # Close up and return
-    myCam.release_cam()
-    cv2.destroyAllWindows()

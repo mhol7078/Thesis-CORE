@@ -5,6 +5,13 @@ from kalmanFilt import KalmanTrack
 
 __author__ = 'Michael Holmes'
 
+##----------------------------------------------------------------##
+#
+# Class to handle all tracking related queries, utilises the
+# Kalman filter class
+#
+##----------------------------------------------------------------##
+
 # GLOBAL to drive mouse events
 target0 = [(-1, -1), (-1, -1), False, (-1, -1)]
 
@@ -41,7 +48,7 @@ class LocalModeOne:
         self.hsvLimits = np.zeros((4, 1))
         self.markup_target(camRef)
         del self.colourParams
-        self.prevIm = cv2.cvtColor(camRef.frame, cv2.COLOR_BGR2GRAY)
+        self.prevIm = cv2.cvtColor(camRef.current_frame(), cv2.COLOR_BGR2GRAY)
         # Update filter with initial positions, image resolution and target colour profile
         self.tracker.x[0] = self.currObs[0]
         self.tracker.x[1] = self.currObs[1]
@@ -61,28 +68,30 @@ class LocalModeOne:
         cv2.waitKey(3000)
         camRef.get_frame()
         camRef.get_frame()  # Doubled to initialise time-step
-        self.tracker.maxUV = (camRef.frame.shape[0], camRef.frame.shape[1])
-        cv2.imshow('Choose Target', camRef.frame)
+        self.tracker.maxUV = camRef.current_frame().shape
+        cv2.imshow('Choose Target', camRef.current_frame())
         cv2.setMouseCallback('Choose Target', onMouse)
         while target0[1][0] == -1:
             if not target0[2]:
                 camRef.get_frame()
-                cv2.imshow('Choose Target', camRef.frame)
+                cv2.imshow('Choose Target', camRef.current_frame())
             else:
                 if not (target0[3][0] == -1):
-                    frameCopy = camRef.frame
+                    frameCopy = camRef.current_frame()
                     cv2.rectangle(frameCopy, target0[0], target0[3], (0, 255, 0))
                     cv2.imshow('Choose Target', frameCopy)
                 else:
-                    cv2.imshow('Choose Target', camRef.frame)
-            cv2.waitKey(50)
+                    cv2.imshow('Choose Target', camRef.current_frame())
+            if cv2.waitKey(50) & 0xFF == ord(' '):
+                cv2.destroyWindow('Choose Target')
+                return
         bounds = self.set_roi(target0)
         self.currObs[0] = bounds[2]
         self.currObs[1] = bounds[5]
         if bounds[0] == bounds[1] or bounds[3] == bounds[4]:
-            self.set_hsv_limits(camRef.frame[int(bounds[2]), int(bounds[5])])
+            self.set_hsv_limits(camRef.current_frame()[int(bounds[2]), int(bounds[5])])
         else:
-            self.set_hsv_limits(camRef.frame[bounds[0]:bounds[1], bounds[3]:bounds[4]])
+            self.set_hsv_limits(camRef.current_frame()[bounds[0]:bounds[1], bounds[3]:bounds[4]])
         return
 
     # Get bounding box from selected points

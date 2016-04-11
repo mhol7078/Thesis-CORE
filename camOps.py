@@ -1,21 +1,32 @@
 import cv2
 import numpy as np
 import time
+import threading
 
 __author__ = 'Michael Holmes'
 
+##----------------------------------------------------------------##
+#
+# Class to handle all camera-related operations such as
+# calibration, updating frames and responding to frame requests
+#
+##----------------------------------------------------------------##
+
 # Global for mouse callback
 target0 = (-1, -1)
+camLock = threading.Lock()
 
 
 def onMouse(event, x, y, flags, param):
     global target0
     if flags & cv2.EVENT_FLAG_LBUTTON:
         target0 = x, y
+    return
 
 
-class CamHandler:
+class CamHandler(threading.Thread):
     def __init__(self, camID=None):
+        threading.Thread.__init__(self)
         # If ID is given, check if valid and open camera
         self.frame = None
         self.lastTimestamp = 0  # Time in seconds since epoch (epoch and accuracy dependent on platform)
@@ -23,14 +34,51 @@ class CamHandler:
         if camID is not None:
             self.camObj = cv2.VideoCapture(camID)
             if not self.camObj.isOpened():
-                self.camObj = self.assign_cam()
+                self.camObj = self._assign_cam()
         else:
-            self.camObj = self.assign_cam()
+            self.camObj = self._assign_cam()
         # Lock resolution at 480p for now if possible
         self.camObj.set(cv2.cv.CV_CAP_PROP_FRAME_WIDTH, 640)
         self.camObj.set(cv2.cv.CV_CAP_PROP_FRAME_HEIGHT, 480)
+        self._get_frame()
+        self.updateFrame = False
+        self.killThread = False
 
-    def assign_cam(self):
+    def run(self):
+        while not self.killThread:
+            if self.updateFrame:
+                camLock.acquire(1)
+                self._get_frame()
+                self.updateFrame = False
+                camLock.release()
+        return
+
+    def stop(self):
+        self.killThread = True
+        self._release_cam()
+        return
+
+    def get_frame(self):
+        camLock.acquire(1)
+        self.updateFrame = True
+        camLock.release()
+        return
+
+    def _get_frame(self):
+        self.camObj.grab()
+        newTimestamp = time.time()
+        self.frame = self.camObj.retrieve()[1]
+        self.deltaTime = newTimestamp - self.lastTimestamp
+        self.lastTimestamp = newTimestamp
+        return
+
+    def current_frame(self):
+        camLock.acquire(1)
+        frame = self.frame
+        camLock.release()
+        return frame
+
+    def _assign_cam(self):
         # Enumerate available cameras
         imgList = []
         currID = 0
@@ -50,10 +98,10 @@ class CamHandler:
             print 'IOError: No cameras found.'
             raise IOError
         # Spawn camera images and choose appropriate camera
-        camRef.open(self.choose_cam(imgList, 1024, 768))
+        camRef.open(self._choose_cam(imgList, 1024, 768))
         return camRef
 
-    def choose_cam(self, imgList, xPx, yPx):
+    def _choose_cam(self, imgList, xPx, yPx):
         global target0
         # Tessellates up to six images into a single image and returns that image of size xPx pixels (width) by yPx pixels (height)
         imX = xPx / len(imgList)
@@ -68,17 +116,10 @@ class CamHandler:
         cv2.destroyAllWindows()
         return target0[0] / imX
 
-    def get_frame(self):
-        self.camObj.grab()
-        newTimestamp = time.time()
-        self.frame = self.camObj.retrieve()[1]
-        self.deltaTime = newTimestamp - self.lastTimestamp
-        self.lastTimestamp = newTimestamp
-
     def is_opened(self):
         return self.camObj.isOpened()
 
-    def release_cam(self):
+    def _release_cam(self):
         return self.camObj.release()
 
     # Function to perform intrinsic calibration of camera using square or circular pattern
@@ -94,26 +135,27 @@ class CamHandler:
             imgPArray = []
             calibCount = 0
             self.get_frame()
-            h, w = self.frame.shape[:2]
+            h, w = self.current_frame().shape[:2]
             cv2.namedWindow('Calibration Capture')
             # Capture calibration images
             while calibCount < numImages:
                 self.get_frame()
-                cv2.imshow('Calibration Capture', self.frame)
+                cv2.imshow('Calibration Capture', self.current_frame())
                 userIn = cv2.waitKey(50)
                 # 'c' to capture frame
                 if userIn & 0xFF == ord('c'):
-                    grayFrame = cv2.cvtColor(self.frame, cv2.COLOR_BGR2GRAY)
+                    grayFrame = cv2.cvtColor(self.current_frame(), cv2.COLOR_BGR2GRAY)
                     ret, corners = cv2.findChessboardCorners(grayFrame, (patternSize[1], patternSize[0]), None)
                     if ret:
                         corners2 = cv2.cornerSubPix(grayFrame, corners, (refineWindow, refineWindow), (-1, -1),
                                                     criteria)
                         if corners2 is None:
                             corners2 = corners
-                            cv2.putText(self.frame, 'Unable to refine corners', (10, grayFrame.shape[0] - 10),
+                            cv2.putText(self.current_frame(), 'Unable to refine corners', (10, grayFrame.shape[0] - 10),
                                         cv2.FONT_HERSHEY_PLAIN, 2, (255, 255, 255), 2)
-                        cv2.drawChessboardCorners(self.frame, (patternSize[1], patternSize[0]), corners2, True)
-                        cv2.imshow('Calibration Capture', self.frame)
+                        cv2.drawChessboardCorners(self.current_frame(), (patternSize[1], patternSize[0]), corners2,
+                                                  True)
+                        cv2.imshow('Calibration Capture', self.current_frame())
                         userToggle = False
                         while not userToggle:
                             userIn = cv2.waitKey(50)
@@ -131,10 +173,12 @@ class CamHandler:
                                     cv2.FONT_HERSHEY_PLAIN, 2, (255, 255, 255), 2)
                         cv2.imshow('Calibration Capture', grayFrame)
                         cv2.waitKey(1000)
-                elif userIn & 0xFF == ord('q'):
+                elif userIn & 0xFF == ord(' '):
                     break
             # Run calibration
-            ret, intrins, distCoefs, rotVecs, transVecs = cv2.calibrateCamera(objPArray, imgPArray, (w, h))
+            if calibCount:
+                ret, intrins, distCoefs, rotVecs, transVecs = cv2.calibrateCamera(objPArray, imgPArray, (w, h))
+            cv2.destroyWindow('Calibration Capture')
             return
         elif patternType == 'Circle':
             return
@@ -155,3 +199,4 @@ class CamHandler:
         lineVect = lineVect / np.linalg.norm(lineVect)
         # Rotate to global frame
         lineVect = np.dot(extrinsicMatrix[0:2, 0:2].T, lineVect)
+        return

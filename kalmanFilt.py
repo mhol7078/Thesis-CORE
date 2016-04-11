@@ -3,6 +3,12 @@ import numpy as np
 __author__ = 'Michael Holmes'
 
 
+##----------------------------------------------------------------##
+#
+# Class to specifically handle model-less 2 dimensional tracking
+#
+##----------------------------------------------------------------##
+
 class KalmanTrack:
     def __init__(self, initState, initControl, initP, posSTD, velSTD, accelSTD, rangeSTD, predictStep, updateStep):
         self.x = initState  # State vector

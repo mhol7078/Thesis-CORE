@@ -1,5 +1,6 @@
 from imageOps import LocalModeOne
 from camOps import CamHandler
+from calibration import Calibration
 import cv2
 import numpy as np
 
@@ -10,7 +11,6 @@ __author__ = 'michael'
 # ---------------------------------------------------------------------
 
 # TODO
-# Put webcam in its own thread to reduce delay
 # Extrinsic Calibration: Cube with 4 calibration circle grids
 
 if __name__ == '__main__':
@@ -58,7 +58,8 @@ if __name__ == '__main__':
     myCam.start()
 
     # Undertake calibration
-    myCam.calibrate_int(**calibParams)
+    myCalib = Calibration(myCam, calibParams)
+    myCalib.calibrate_int(True)
 
     # Initialise Local Tracking Mode
     localMode = LocalModeOne(myCam, kalmanParams, flowParams, featureParams, colourParams)

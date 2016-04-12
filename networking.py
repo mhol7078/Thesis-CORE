@@ -43,7 +43,8 @@ class NetBase(threading.Thread, NetProto):
         self.hostname = socket.getfqdn()
         self.hostAddr = socket.gethostbyname(self.hostname)
         self.broadAddr = '192.168.1.255'
-        # self.subnetMask = socket.inet_ntoa(fcntl.ioctl(socket.socket(socket.AF_INET, socket.SOCK_DGRAM), 35099, struct.pack('256s', "wlan0"))[20:24])
+        # self.subnetMask = socket.inet_ntoa(fcntl.ioctl(socket.socket(socket.AF_INET, socket.SOCK_DGRAM),
+        #                                                35099, struct.pack('256s', "wlan0"))[20:24])
         self.port = port
         self.commReadable = False
         self.commWriteable = False

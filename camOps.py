@@ -103,7 +103,8 @@ class CamHandler(threading.Thread):
 
     def _choose_cam(self, imgList, xPx, yPx):
         global target0
-        # Tessellates up to six images into a single image and returns that image of size xPx pixels (width) by yPx pixels (height)
+        # Tessellates up to six images into a single image and returns that
+        # image of size xPx pixels (width) by yPx pixels (height)
         imX = xPx / len(imgList)
         outImg = np.zeros((yPx, xPx, 3), np.uint8)
         for idx, img in enumerate(imgList):
@@ -121,69 +122,6 @@ class CamHandler(threading.Thread):
 
     def _release_cam(self):
         return self.camObj.release()
-
-    # Function to perform intrinsic calibration of camera using square or circular pattern
-    def calibrate_int(self, patternType, patternSize, patternDimensions, numImages, refineWindow, numIter, epsIter):
-        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_COUNT, numIter, epsIter)
-        if patternType == 'Square':
-            # Initialise 3D object grid for chessboard
-            objectPoints = np.zeros((np.prod(patternSize), 3), np.float32)
-            objectPoints[:, :2] = np.indices(patternSize).T.reshape(-1, 2)
-            objectPoints *= patternDimensions[0]
-            # Initialise point buffers
-            objPArray = []
-            imgPArray = []
-            calibCount = 0
-            self.get_frame()
-            h, w = self.current_frame().shape[:2]
-            cv2.namedWindow('Calibration Capture')
-            # Capture calibration images
-            while calibCount < numImages:
-                self.get_frame()
-                cv2.imshow('Calibration Capture', self.current_frame())
-                userIn = cv2.waitKey(50)
-                # 'c' to capture frame
-                if userIn & 0xFF == ord('c'):
-                    grayFrame = cv2.cvtColor(self.current_frame(), cv2.COLOR_BGR2GRAY)
-                    ret, corners = cv2.findChessboardCorners(grayFrame, (patternSize[1], patternSize[0]), None)
-                    if ret:
-                        corners2 = cv2.cornerSubPix(grayFrame, corners, (refineWindow, refineWindow), (-1, -1),
-                                                    criteria)
-                        if corners2 is None:
-                            corners2 = corners
-                            cv2.putText(self.current_frame(), 'Unable to refine corners', (10, grayFrame.shape[0] - 10),
-                                        cv2.FONT_HERSHEY_PLAIN, 2, (255, 255, 255), 2)
-                        cv2.drawChessboardCorners(self.current_frame(), (patternSize[1], patternSize[0]), corners2,
-                                                  True)
-                        cv2.imshow('Calibration Capture', self.current_frame())
-                        userToggle = False
-                        while not userToggle:
-                            userIn = cv2.waitKey(50)
-                            # 'y' to confirm good corner determination
-                            if userIn & 0xFF == ord('y'):
-                                userToggle = True
-                                objPArray.append(objectPoints)
-                                imgPArray.append(corners2.reshape(-1, 2))
-                                calibCount += 1
-                            # 'n' to abandon selected image
-                            elif userIn & 0xFF == ord('n'):
-                                userToggle = True
-                    else:
-                        cv2.putText(grayFrame, 'Unable to locate chessboard', (10, grayFrame.shape[0] - 10),
-                                    cv2.FONT_HERSHEY_PLAIN, 2, (255, 255, 255), 2)
-                        cv2.imshow('Calibration Capture', grayFrame)
-                        cv2.waitKey(1000)
-                elif userIn & 0xFF == ord(' '):
-                    break
-            # Run calibration
-            if calibCount:
-                ret, intrins, distCoefs, rotVecs, transVecs = cv2.calibrateCamera(objPArray, imgPArray, (w, h))
-            cv2.destroyWindow('Calibration Capture')
-            return
-        elif patternType == 'Circle':
-            return
-        else:
-            assert ("Calibration pattern type not expected.")
 
     def local_2D_to_3D(self, point, cameraMatrix, extrinsicMatrix):
         # Isolate intrinsic parameters

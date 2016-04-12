@@ -175,14 +175,11 @@ class LocalModeOne:
             newHSV = cv2.inRange(origHSV, cv2.cv.Scalar(self.hsvLimits[0], self.hsvLimits[2], 0),
                                  cv2.cv.Scalar(self.hsvLimits[1], self.hsvLimits[3], 255))
         else:
-            newHSV = cv2.inRange(origHSV, cv2.cv.Scalar(self.hsvLimits[1], self.hsvLimits[2], 0),
-                                 cv2.cv.Scalar(255, self.hsvLimits[3], 255)) & cv2.inRange(origHSV, cv2.cv.Scalar(0,
-                                                                                                                  self.hsvLimits[
-                                                                                                                      2],
-                                                                                                                  0),
-                                                                                           cv2.cv.Scalar(
-                                                                                               self.hsvLimits[0],
-                                                                                               self.hsvLimits[3], 255))
+            newHSV = cv2.inRange(origHSV,
+                                 cv2.cv.Scalar(self.hsvLimits[1], self.hsvLimits[2], 0),
+                                 cv2.cv.Scalar(255, self.hsvLimits[3], 255)) & \
+                     cv2.inRange(origHSV, cv2.cv.Scalar(0, self.hsvLimits[2], 0),
+                                 cv2.cv.Scalar(self.hsvLimits[0], self.hsvLimits[3], 255))
         return newHSV
 
     def check_contours(self, contours):

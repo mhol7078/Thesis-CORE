@@ -38,8 +38,8 @@ class CamHandler(threading.Thread):
         else:
             self.camObj = self._assign_cam()
         # Lock resolution at 480p for now if possible
-        self.camObj.set(cv2.cv.CV_CAP_PROP_FRAME_WIDTH, 640)
-        self.camObj.set(cv2.cv.CV_CAP_PROP_FRAME_HEIGHT, 480)
+        # self.camObj.set(cv2.cv.CV_CAP_PROP_FRAME_WIDTH, 640)
+        # self.camObj.set(cv2.cv.CV_CAP_PROP_FRAME_HEIGHT, 480)
         self._get_frame()
         self.updateFrame = False
         self.killThread = False
@@ -47,7 +47,7 @@ class CamHandler(threading.Thread):
     def run(self):
         while not self.killThread:
             if self.updateFrame:
-                camLock.acquire(1)
+                camLock.acquire()
                 self._get_frame()
                 self.updateFrame = False
                 camLock.release()
@@ -59,7 +59,7 @@ class CamHandler(threading.Thread):
         return
 
     def get_frame(self):
-        camLock.acquire(1)
+        camLock.acquire()
         self.updateFrame = True
         camLock.release()
         return
@@ -73,10 +73,22 @@ class CamHandler(threading.Thread):
         return
 
     def current_frame(self):
-        camLock.acquire(1)
+        camLock.acquire()
         frame = self.frame
         camLock.release()
         return frame
+
+    def current_timestamp(self):
+        camLock.acquire()
+        timeStamp = self.lastTimestamp
+        camLock.release()
+        return timeStamp
+
+    def current_deltaTime(self):
+        camLock.acquire()
+        deltaTime = self.deltaTime
+        camLock.release()
+        return deltaTime
 
     def _assign_cam(self):
         # Enumerate available cameras

@@ -77,7 +77,7 @@ class LocalModeOne:
                 cv2.imshow('Choose Target', camRef.current_frame())
             else:
                 if not (target0[3][0] == -1):
-                    frameCopy = camRef.current_frame()
+                    frameCopy = camRef.current_frame().copy()
                     cv2.rectangle(frameCopy, target0[0], target0[3], (0, 255, 0))
                     cv2.imshow('Choose Target', frameCopy)
                 else:
@@ -165,21 +165,23 @@ class LocalModeOne:
         # Morphological Closing
         newHSV = cv2.morphologyEx(newHSV, cv2.MORPH_CLOSE, self.kernel)
         # Find largest blob
-        contours, hierarchy = cv2.findContours(newHSV, cv2.cv.CV_RETR_EXTERNAL, cv2.cv.CV_CHAIN_APPROX_SIMPLE)
+        _, contours, hierarchy = cv2.findContours(newHSV, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         targetOut = self.check_contours(contours)
         return targetOut
 
     def threshold_target(self, origHSV):
         # Circular colour spaces are a pain
         if self.hsvLimits[1] >= self.hsvLimits[0]:
-            newHSV = cv2.inRange(origHSV, cv2.cv.Scalar(self.hsvLimits[0], self.hsvLimits[2], 0),
-                                 cv2.cv.Scalar(self.hsvLimits[1], self.hsvLimits[3], 255))
+            newHSV = cv2.inRange(origHSV,
+                                 np.array([self.hsvLimits[0], self.hsvLimits[2], 0]),
+                                 np.array([self.hsvLimits[1], self.hsvLimits[3], 255]))
         else:
             newHSV = cv2.inRange(origHSV,
-                                 cv2.cv.Scalar(self.hsvLimits[1], self.hsvLimits[2], 0),
-                                 cv2.cv.Scalar(255, self.hsvLimits[3], 255)) & \
-                     cv2.inRange(origHSV, cv2.cv.Scalar(0, self.hsvLimits[2], 0),
-                                 cv2.cv.Scalar(self.hsvLimits[0], self.hsvLimits[3], 255))
+                                 np.array([self.hsvLimits[1], self.hsvLimits[2], 0]),
+                                 np.array([255, self.hsvLimits[3], 255])) & \
+                     cv2.inRange(origHSV,
+                                 np.array([0, self.hsvLimits[2], 0]),
+                                 np.array([self.hsvLimits[0], self.hsvLimits[3], 255]))
         return newHSV
 
     def check_contours(self, contours):
@@ -201,8 +203,8 @@ class LocalModeOne:
             # Find centroid closest to current estimate
             kdTree = spatial.cKDTree(candidates)
             prevEst = self.tracker.x[:2].T
-            dist, idxs = kdTree.query(prevEst)
-            targetOut = candidates[idxs[0], :2].reshape((2, 1))
+            dist, idx = kdTree.query(prevEst)
+            targetOut = candidates[idx[0], :2].reshape((2, 1))
             self.colourLock = True
             self.colourTargetRadius = int(np.sqrt(moments['m00'] / np.pi)) + 5
         else:

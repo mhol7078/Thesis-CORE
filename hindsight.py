@@ -1,6 +1,7 @@
 from imageOps import LocalModeOne
 from camOps import CamHandler
 from calibration import Calibration
+import sys
 import cv2
 from HSConfig import kalmanParams, flowParams, featureParams, colourParams, calibParams, netParams
 
@@ -20,9 +21,11 @@ if __name__ == '__main__':
     myCam.start()
 
     # Undertake calibration
-    myCalib = Calibration(myCam, calibParams=calibParams)
-    # myCalib.calibrate_int(True)
-    myCalib.calibrate_ext(120)
+    # myCalib = Calibration(myCam, calibParams=calibParams)
+    myCalib = Calibration(myCam, calibFilename='intrinsic.cfg', targetFilename='target1.cfg')
+    # myCalib.calibrate_int()
+    # myCalib.write_calib_to_file('intrinsic.cfg')
+    myCalib.calibrate_target('target1.cfg')
     # Initialise Local Tracking Mode
     localMode = LocalModeOne(myCam, kalmanParams, flowParams, featureParams, colourParams)
 

@@ -27,15 +27,29 @@ colourParams = dict(hueWindow=10,
                     satWindow=10,
                     kernelSize=5)
 
-calibParams = dict(patternType='Circle',
-                   patternSize=(4, 11),
-                   patternDimension=30,
-                   numImages=5,
-                   refineWindow=5,
+calibParams = dict(intPatternType='Circle',
+                   extPatternType='Square',
+                   intPatternSize=(4, 11),
+                   extPatternSize=(6, 9),
+                   intPatternDimension=72,
+                   extPatternDimension=19,
+                   numImages=30,
+                   refineWindow=(5, 5),
                    numIter=30,
                    epsIter=0.1,
-                   camMatrix=0)
+                   camMatrix=np.zeros((3, 3)),
+                   distCoefs=np.zeros((5, 1)),
+                   nestMin=4,
+                   calTime=120.0,
+                   capInterval=2.0,
+                   markerOffsets=[-0.66, -0.5, 0.66, -0.5, 0.66, 0.5, -0.66, 0.5],
+                   gridOffset=0.21,
+                   markerSides=dict(N=(6, 1),
+                                    S=(5, 2),
+                                    E=(4, 3),
+                                    W=(7, 0)))
 
 netParams = dict(nodeType='Slave',
+                 numSlaves=1,
                  port=42680,
-                 maxQueueSize=15)
+                 bcAddr='192.168.1.255')

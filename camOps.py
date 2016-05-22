@@ -28,65 +28,67 @@ class CamHandler(threading.Thread):
     def __init__(self, camID=None):
         threading.Thread.__init__(self)
         # If ID is given, check if valid and open camera
-        self.frame = None
-        self.lastTimestamp = 0  # Time in seconds since epoch (epoch and accuracy dependent on platform)
-        self.deltaTime = 0  # Time in seconds between camera frames
+        self._frame = None
+        self._lastTimestamp = 0  # Time in seconds since epoch (epoch and accuracy dependent on platform)
+        self._deltaTime = 0  # Time in seconds between camera frames
         if camID is not None:
-            self.camObj = cv2.VideoCapture(camID)
-            if not self.camObj.isOpened():
-                self.camObj = self._assign_cam()
+            self._camObj = cv2.VideoCapture(camID)
+            if not self._camObj.isOpened():
+                self._camObj = self._assign_cam()
         else:
-            self.camObj = self._assign_cam()
+            self._camObj = self._assign_cam()
         # Lock resolution at 480p for now if possible
         # self.camObj.set(cv2.cv.CV_CAP_PROP_FRAME_WIDTH, 640)
         # self.camObj.set(cv2.cv.CV_CAP_PROP_FRAME_HEIGHT, 480)
         self._get_frame()
-        self.updateFrame = False
-        self.killThread = False
+        self._updateFrame = False
+        self._killThread = False
+        self.setDaemon(True)
+        return
 
     def run(self):
-        while not self.killThread:
-            if self.updateFrame:
+        while not self._killThread:
+            if self._updateFrame:
                 camLock.acquire()
                 self._get_frame()
-                self.updateFrame = False
+                self._updateFrame = False
                 camLock.release()
         return
 
     def stop(self):
-        self.killThread = True
+        self._killThread = True
         self._release_cam()
         return
 
     def get_frame(self):
         camLock.acquire()
-        self.updateFrame = True
+        self._updateFrame = True
         camLock.release()
         return
 
     def _get_frame(self):
-        self.camObj.grab()
+        self._camObj.grab()
         newTimestamp = time.time()
-        self.frame = self.camObj.retrieve()[1]
-        self.deltaTime = newTimestamp - self.lastTimestamp
-        self.lastTimestamp = newTimestamp
+        self._frame = self._camObj.retrieve()[1]
+        self._deltaTime = newTimestamp - self._lastTimestamp
+        self._lastTimestamp = newTimestamp
         return
 
     def current_frame(self):
         camLock.acquire()
-        frame = self.frame
+        frame = self._frame
         camLock.release()
         return frame
 
     def current_timestamp(self):
         camLock.acquire()
-        timeStamp = self.lastTimestamp
+        timeStamp = self._lastTimestamp
         camLock.release()
         return timeStamp
 
     def current_deltaTime(self):
         camLock.acquire()
-        deltaTime = self.deltaTime
+        deltaTime = self._deltaTime
         camLock.release()
         return deltaTime
 
@@ -130,10 +132,10 @@ class CamHandler(threading.Thread):
         return target0[0] / imX
 
     def is_opened(self):
-        return self.camObj.isOpened()
+        return self._camObj.isOpened()
 
     def _release_cam(self):
-        return self.camObj.release()
+        return self._camObj.release()
 
     def local_2D_to_3D(self, point, cameraMatrix, extrinsicMatrix):
         # Isolate intrinsic parameters

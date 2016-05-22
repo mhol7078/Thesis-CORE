@@ -39,20 +39,22 @@ if __name__ == '__main__':
         myCam.get_frame()
 
         # Update tracker elapsed times
-        localMode.tracker.update_elapsed_counters(myCam.current_deltaTime())
+        localMode.update_elapsed_counters(myCam.current_deltaTime())
 
         # Run prediction stage if prediction increment has elapsed
-        if localMode.tracker.predict_stage_elapsed():
-            localMode.tracker.predict()
+        if localMode.predict_stage_elapsed():
+            localMode.predict()
 
         # Run update stage if update increment has elapsed
-        if localMode.tracker.update_stage_elapsed():
-            localMode.new_obs_from_im(myCam.current_frame())
-            localMode.tracker.update(localMode.currObs)
+        if localMode.update_stage_elapsed():
+            localMode.new_obs_from_im(myCam.current_frame().copy())
+            localMode.update(localMode.get_current_obs())
 
         # Push latest filter estimate to image window along with new image
-        cv2.circle(myCam.current_frame(), (localMode.tracker.x[0], localMode.tracker.x[1]), 10, (0, 255, 0), 1)
-        cv2.imshow('HindSight Main', myCam.current_frame())
+        frameCopy = myCam.current_frame().copy()
+        currEstimate = localMode.observe_model()
+        cv2.circle(frameCopy, (currEstimate[0], currEstimate[1]), 10, (0, 255, 0), 1)
+        cv2.imshow('HindSight Main', frameCopy)
 
         # Check for termination
         if cv2.waitKey(1) & 0xFF == ord(' '):

@@ -27,29 +27,44 @@ colourParams = dict(hueWindow=10,
                     satWindow=10,
                     kernelSize=5)
 
-calibParams = dict(intPatternType='Circle',
-                   extPatternType='Square',
-                   intPatternSize=(4, 11),
-                   extPatternSize=(6, 9),
-                   intPatternDimension=72,
-                   extPatternDimension=19,
-                   numImages=30,
-                   refineWindow=(5, 5),
-                   numIter=30,
-                   epsIter=0.1,
-                   camMatrix=np.zeros((3, 3)),
-                   distCoefs=np.zeros((5, 1)),
-                   nestMin=4,
-                   calTime=120.0,
-                   capInterval=2.0,
-                   markerOffsets=[-0.66, -0.5, 0.66, -0.5, 0.66, 0.5, -0.66, 0.5],
-                   gridOffset=0.21,
-                   markerSides=dict(N=(6, 1),
-                                    S=(5, 2),
-                                    E=(4, 3),
-                                    W=(7, 0)))
+calibCommonParams = dict(refineWindow=(5, 5),
+                         numIter=30,
+                         epsIter=0.1,
+                         )
 
-netParams = dict(nodeType='Slave',
+calibIntParams = dict(intPatternType='Circle',
+                      intPatternSize=(4, 11),
+                      intPatternDimension=74,
+                      intNumImages=30,
+                      camMatrix=np.zeros((3, 3)),
+                      distCoefs=np.zeros((5, 1)),
+                      )
+
+calibExtParams = dict(extPatternType='Square',
+                      extPatternSize=(6, 9),
+                      extPatternDimension=18,
+                      markerOffsets=[-0.66, -0.5, 0.66, -0.5, 0.66, 0.5, -0.66, 0.5],
+                      gridOffset=0.21,
+                      nestMin=4,
+                      objErrTol=3.0,
+                      extCalTime=3.0,
+                      extCapInterval=0.05,
+                      markerSides=dict(N=(6, 1),
+                                       S=(5, 2),
+                                       E=(4, 3),
+                                       W=(7, 0)),
+                      )
+
+netParams = dict(nodeType='Master',
                  numSlaves=1,
-                 port=42680,
-                 bcAddr='192.168.1.255')
+                 port=42681,
+                 bcAddr='192.168.1.255',
+                 bcReattempts=5,
+                 msgTimeout=10,
+                 waitTimeout=120)
+
+miscParams = dict(camIndex=1,
+                  capHeight=480,
+                  capWidth=640,
+                  capFrameRate=25.0,
+                  capCodec='XVID')

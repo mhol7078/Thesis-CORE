@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 from scipy import spatial
 from kalmanFilt import KalmanTrack
+from HSConfig import kalmanParams, flowParams, featureParams, colourParams
 
 __author__ = 'Michael Holmes'
 
@@ -38,15 +39,15 @@ def onMouse(event, x, y, flags, param):
 
 
 class LocalModeOne(KalmanTrack):
-    def __init__(self, camRef, kalmanParams, flowParams, featureParams, colourParams):
+    def __init__(self, camRef):
         # Markup Target
-        KalmanTrack.__init__(**kalmanParams)
+        KalmanTrack.__init__(self, **kalmanParams)
         self._currObs = np.zeros((2, 1))
         self._colourParams = colourParams
         self._kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,
-                                                (colourParams['kernelSize'], colourParams['kernelSize']))
+                                                 (colourParams['kernelSize'], colourParams['kernelSize']))
         self._hsvLimits = np.zeros((4, 1))
-        self.markup_target(camRef)
+        self._markup_target(camRef)
         del self._colourParams
         self._prevIm = cv2.cvtColor(camRef.current_frame(), cv2.COLOR_BGR2GRAY)
         # Update filter with initial positions, image resolution and target colour profile
@@ -63,7 +64,7 @@ class LocalModeOne(KalmanTrack):
         self._featureParams = featureParams
         return
 
-    def markup_target(self, camRef):
+    def _markup_target(self, camRef):
         global target0, frameImg
         cv2.waitKey(3000)
         camRef.get_frame()

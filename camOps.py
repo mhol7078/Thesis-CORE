@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 import time
 import threading
-
+from HSConfig import miscParams
 __author__ = 'Michael Holmes'
 
 ##----------------------------------------------------------------##
@@ -38,12 +38,12 @@ class CamHandler(threading.Thread):
         else:
             self._camObj = self._assign_cam()
         # Lock resolution at 480p for now if possible
-        # self.camObj.set(cv2.cv.CV_CAP_PROP_FRAME_WIDTH, 640)
-        # self.camObj.set(cv2.cv.CV_CAP_PROP_FRAME_HEIGHT, 480)
-        self._get_frame()
-        self._updateFrame = False
+        self._camObj.set(cv2.CAP_PROP_FRAME_WIDTH, miscParams['capWidth'])
+        self._camObj.set(cv2.CAP_PROP_FRAME_HEIGHT, miscParams['capHeight'])
+        self._updateFrame = True
         self._killThread = False
         self.setDaemon(True)
+        self.start()
         return
 
     def run(self):

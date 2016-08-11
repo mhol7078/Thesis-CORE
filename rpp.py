@@ -11,7 +11,7 @@ from rpputil import *
 #           float64 tolerance for recursion, float64 epsilon for recursion,
 #           'SVD' (single value decomposition) or 'QRN' (quaternion) for rotation solve method
 # Output:   Numpy Tuple (R, t, err) where R = 3x3 Rotation matrix, t = 3x1 translation vector, err = projection error
-def rpp(objPoints=None, imgPoints=None, initRGuess=None, tolerance=None, epsilon=None, rotMethod=None):
+def rpp(objPoints=None, imgPoints=None, initRGuess=None, tolerance=None, epsilon=None, rotMethod=None, maxIter=None):
     # Use test data if no values given
     if objPoints is None:
         objPoints = np.array([0.0685, 0.6383, 0.4558, 0.7411, -0.7219, 0.7081, 0.7061, 0.2887, -0.9521, -0.2553,
@@ -31,8 +31,10 @@ def rpp(objPoints=None, imgPoints=None, initRGuess=None, tolerance=None, epsilon
         epsilon = 1e-8
     if rotMethod is None:
         rotMethod = 'SVD'
+    if maxIter is None:
+        maxIter = 40
 
-    options = {'method': rotMethod, 'tolerance': tolerance, 'epsilon': epsilon}
+    options = {'method': rotMethod, 'tolerance': tolerance, 'epsilon': epsilon, 'maxIter': maxIter}
     if initRGuess is not None:
         options['initRGuess'] = initRGuess
 
@@ -113,7 +115,8 @@ def obj_pose(objPoints, imgPoints, options):
     Ri, ti, Qi, newErr = abs_kernel(objPoints, Qi, F, tFactor, options['method'])
     it += 1
 
-    while (np.abs((oldErr - newErr) / oldErr) > options['tolerance']) and (newErr > options['epsilon']):
+    while (np.abs((oldErr - newErr) / oldErr) > options['tolerance']) and (newErr > options['epsilon']) and \
+                    it < options['maxIter']:
         oldErr = newErr
         # Compute the optimal estimate of R
         Ri, ti, Qi, newErr = abs_kernel(objPoints, Qi, F, tFactor, options['method'])
@@ -408,8 +411,8 @@ def get_rotation_Y_wrt_T(v, p, t, DB, Rz=None):
     p1 = (1 + roots ** 2) ** 3
     roots = roots[np.nonzero(np.abs(np.real(p1)) > 0.1)[0]]
 
-    sa = (2 * roots) / (1 + roots ** 2)
-    ca = (1 - roots ** 2) / (1 + roots ** 2)
+    sa = np.real((2 * roots) / (1 + roots ** 2))
+    ca = np.real((1 - roots ** 2) / (1 + roots ** 2))
 
     al = np.arctan2(sa, ca)
 

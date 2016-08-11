@@ -73,18 +73,18 @@ class NetBase(threading.Thread, NetProto):
             self._killThread = True
             sys.exit()
         self._socksOpen = True
-        return
+        return True
 
     def stop(self):
         self._killThread = True
-        return
+        return True
 
     def _close_socks(self):
         self._socksOpen = False
         self._commSock.close()
         if self._nodeType == 'Slave':
             self._broadSock.close()
-        return
+        return True
 
     def _check_socks(self, socketType):
         if socketType == 'comm':
@@ -116,7 +116,7 @@ class NetBase(threading.Thread, NetProto):
                 self._broadWriteable = True
             else:
                 self._broadWriteable = False
-        return 0
+        return True
 
     def _send_data(self, socketType, prefixKey, data=None):
         totalSent = 0
@@ -141,9 +141,9 @@ class NetBase(threading.Thread, NetProto):
                 print 'Communications connection broken.'
                 self._close_socks()
                 self._socksOpen = False
-                return 1
+                return False
             totalSent += sent
-        return 0
+        return True
 
     def _rec_data(self, socketType):
         # Make sure sockets are still connected
@@ -209,7 +209,7 @@ class NetBase(threading.Thread, NetProto):
             while self._broadReadable and not self._killThread:
                 self._broadSock.recv(self._recBuffSize)
                 self._check_socks('broad')
-        return 0
+        return True
 
 
 # Class for Master Server Node
@@ -238,14 +238,14 @@ class MasterNode(NetBase):
         self._flush_socket('broad')
         # Connect to client nodes
         ret = self._connect_to_slaves()
-        if ret:
+        if not ret:
             self._disconnect_from_slaves()
-            return 1
+            return False
         # If successfully connected, synchronise time (forced)
         ret = self._sync_time(True)
-        if ret:
+        if not ret:
             self._disconnect_from_slaves()
-            return 1
+            return False
         while not self._killThread:
             if self._timeSync:
                 self._timeSync = False
@@ -259,7 +259,7 @@ class MasterNode(NetBase):
                     self._newSlaveData = None
                 self.netEventDict['recDataSync'].set()
         self._disconnect_from_slaves()
-        return 0
+        return True
 
     # Command main thread to check if slave data has arrived and collect one packet, block until updated.
     def get_slave_data(self):
@@ -278,9 +278,9 @@ class MasterNode(NetBase):
         for castCount in range(self._bcReattempts):
             print 'Broadcasting connection request %d/%d.' % (castCount + 1, self._bcReattempts)
             ret = self._send_data('broad', 'Connect')
-            if ret:
+            if not ret:
                 print 'Failed to connect to slave nodes. Exiting.'
-                return 1
+                return False
             castTime = time.time()
             currTime = castTime
             while not self._killThread \
@@ -305,10 +305,10 @@ class MasterNode(NetBase):
                 break
         if self.num_connected() == self._numSlaves:
             print 'Successfully connected to all client nodes.'
-            return 0
+            return True
         else:
             print 'Failed to connect to all slave nodes. Exiting.'
-            return 1
+            return False
 
     def _disconnect_from_slaves(self):
         # Kill remaining worker threads then exit
@@ -318,7 +318,7 @@ class MasterNode(NetBase):
             self._clients[addr].stop()
             while self._clients[addr].isAlive():
                 pass
-        return 0
+        return True
 
     # Returns integer number of connected slave nodes
     def num_connected(self):
@@ -327,7 +327,7 @@ class MasterNode(NetBase):
     # Set flag for time synchronisation to slaves
     def start_time_sync(self):
         self._timeSync = True
-        return 0
+        return True
 
     def send_comms_all(self, prefixKey, data=None):
         for clientAddr in self._clients.keys():
@@ -357,13 +357,13 @@ class MasterNode(NetBase):
             self._recQueue.get()
             self._recQueue.task_done()
         if ret:
-            print 'Failed to synchronise node times.'
-            return 1
-        else:
             print 'Synchronised time with all nodes.'
             self.slaveSyncTimes = slaveTimes
             self.netEventDict['calibSync'].set()
-            return 0
+            return True
+        else:
+            print 'Failed to synchronise node times.'
+            return False
 
     def _check_time_returns(self, slaveTimes):
         if len(slaveTimes) != len(self._clients):
@@ -374,9 +374,9 @@ class MasterNode(NetBase):
                     del clientsCopy[clientAddr]
             for clientAddr in clientsCopy.keys():
                 print 'Error: Did not receive time sync for client address: %s:%d' % (clientAddr[0], clientAddr[1])
-            return 1
+            return False
         else:
-            return 0
+            return True
 
 
 # Worker thread for Master Server Node
@@ -399,28 +399,28 @@ class MasterThread(NetBase):
     def run(self):
         # Send connection confirmation to slave node
         ret = self._send_data('comm', 'Success')
-        if ret:
-            return 1
+        if not ret:
+            return False
         while not self._killThread:
             # Send data/commands to Slave node from Master if available
             if not self.sendQueue.empty():
                 prefixKey, data = self.sendQueue.get()
                 ret = self._send_data('comm', prefixKey, data)
-                if ret:
-                    return 1
+                if not ret:
+                    return False
                 self.sendQueue.task_done()
             # Send data to Master thread from Slaves if available
             self._check_socks('comm')
             if self._commReadable:
                 dataIn = self._rec_data('comm')
                 if dataIn is None:
-                    return 1
+                    return False
                 msgLen = int(dataIn[1:4])
                 if msgLen == 4:
                     self._recQueue.put((self._threadID, dataIn[0], None))
                 else:
                     self._recQueue.put((self._threadID, dataIn[0], dataIn[4:4 + msgLen]))
-        return 0
+        return True
 
 
 # Class for Slave Client Node
@@ -441,22 +441,22 @@ class SlaveNode(NetBase):
     def run(self):
         self._flush_socket('broad')
         ret = self._sync_to_master()
-        if ret:
-            return 1
+        if not ret:
+            return False
         while not self._killThread:
             # Send any queued comms data (usually calibration or position) to Master
             if not self.sendQueue.empty():
                 prefixKey, data = self.sendQueue.get()
                 ret = self._send_data('comm', prefixKey, data)
-                if ret:
-                    return 1
+                if not ret:
+                    return False
                 self.sendQueue.task_done()
             # Respond to commands from Master
             self._check_socks('comm')
             if self._commReadable:
                 dataIn = self._rec_data('comm')
                 if dataIn is None:
-                    return 1
+                    return False
                 elif dataIn[0] == self.commMsgPrefixes['Time']:
                     print 'Received time sync request.'
                     if not self._timeSynced:
@@ -487,7 +487,7 @@ class SlaveNode(NetBase):
             if self._broadReadable:
                 dataIn, inAddr = self._rec_data('broad')
                 if dataIn is None:
-                    return 1
+                    return False
                 elif dataIn[0] == self.broadMsgPrefixes['Connect']:
                     print 'Received connection request.'
                     if self._slaved:
@@ -500,7 +500,7 @@ class SlaveNode(NetBase):
                     print 'Received shutdown request.'
                     self._disconnect_from_master()
                     self._killThread = True
-        return 0
+        return True
 
     def _sync_to_master(self):
         print 'Waiting for master broadcast.'
@@ -513,16 +513,16 @@ class SlaveNode(NetBase):
             if self._broadReadable:
                 broadIn, addr = self._rec_data('broad')
                 if broadIn is None:
-                    return 1
+                    return False
                 elif broadIn[0] == self.broadMsgPrefixes['Connect']:
                     self._masterAddr = addr[0]
                     print 'Received master connection request.'
                     self._connect_to_master()
             currTime = time.time()
         if self._slaved:
-            return 0
+            return True
         else:
-            return 1
+            return False
 
     def _connect_to_master(self):
         connected = False
@@ -536,10 +536,10 @@ class SlaveNode(NetBase):
                     connected = True
         print 'Connected'
         self._slaved = True
-        return
+        return True
 
     def _disconnect_from_master(self):
         self._slaved = False
         self._close_socks()
         print 'Disconnected from master.'
-        return
+        return True

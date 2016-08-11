@@ -19,8 +19,8 @@ import shelve
 # Rewrote calibration capture to suit offline processing
 
 # TODO: Add multi-zonal support post-thesis
-# TODO: Take calibration suite offline.
-# TODO: Employ RANSAC backed PnP
+# TODO: RPP node loadsharing, move to C++ wrap
+# TODO: Improve Extrinsic Angular sensitivity - Change extrinsic chessboard to more viewable pattern
 
 ##----------------------------------------------------------------##
 #
@@ -70,6 +70,8 @@ class Calibration:
         self._gridOffset = None
         # Relating markers to sides of the 3d rig
         self._markerSides = None
+        # Transformation matrices of each Slave to Master
+        self.extrinTransforms = None
 
         # Load common calibration parameters
         if commonFilename is not None and os.path.isfile(commonFilename):
@@ -116,10 +118,15 @@ class Calibration:
                 print 'Cannot continue without intrinsic calibration.'
                 exit()
 
-        # Quick exit for not dealing with extrinsic calibration in main program/networking requirements.
+        # TODO: Quick exit for not dealing with extrinsic calibration in main program/networking requirements.
         if noExtrin:
             self._members_from_params('extrin', **cEP)
-            print 'Finished non-extrinsic calibration.'
+            if targetFilename is not None and os.path.isfile(targetFilename):
+                if self._read_target_from_file(targetFilename):
+                    print 'Loaded calibration target file.'
+                else:
+                    print 'Failed to load calibration target file.'
+            print 'Finished non-networked calibration quick load.'
             return
 
         # Load extrinsics
@@ -127,13 +134,14 @@ class Calibration:
         if self._netRef.name == 'Master' and extrinFilename is not None and os.path.isfile(extrinFilename):
             # Load extrinsic calibration data and tell slaves no extrinsic calibration is required.
             ret, calibExtParams = self._read_extrin_from_file(extrinFilename)
-            if not ret:
+            if ret:
+                self._netRef.send_comms_all('NoCalibrate')
+                self._members_from_params('extrin', **calibExtParams)
+                print 'Loaded extrinsic calbration from %s.' % extrinFilename
+            else:
                 print 'Failed to load extrinsic calibration from file. Please remove %s to recalibrate camera.' % \
                       extrinFilename
                 exit()
-            else:
-                self._netRef.send_comms_all('NoCalibrate')
-                print 'Loaded extrinsic calbration from %s.' % extrinFilename
 
         # Else perform new extrinsic calibration
         # Master side
@@ -144,7 +152,7 @@ class Calibration:
             print 'Loaded default extrinsic parameters.'
             # Load target configuration
             if targetFilename is not None and os.path.isfile(targetFilename):
-                ret = self._load_target(targetFilename)
+                ret = self._read_target_from_file(targetFilename)
                 if ret:
                     print 'Loaded calibration target from %s' % targetFilename
                 else:
@@ -159,7 +167,7 @@ class Calibration:
                 if userIn == 'y':
                     ret = self._calibrate_target()
                     if ret:
-                        self._save_target('targetCalib.cfg')
+                        self._write_target_to_file('targetCalib.cfg')
                         print 'Target calibration successful, saved calibration to <targetCalib.cfg>'
                     else:
                         print 'Failed to calibrate target. Cannot continue without target.'
@@ -171,8 +179,11 @@ class Calibration:
                 userIn = raw_input('Perform extrinsic calibration? (y/n): ')
             if userIn == 'y':
                 # Begin master extrinsic calibration
-                self._calibrate_ext_master()
+                ret = self._calibrate_ext_master()
                 # If successful, save calibration and alert slave nodes to continue
+                if ret:
+                    self._write_extrin_to_file('extrinCalib.cfg')
+                    self._netRef.send_comms_all('Success')
             else:
                 print 'Cannot continue without extrinsic calibration.'
                 exit()
@@ -229,7 +240,7 @@ class Calibration:
                              extPatternSize=None, intPatternDimension=None, extPatternDimension=None, intNumImages=None,
                              refineWindow=None, numIter=None, epsIter=None, camMatrix=None, distCoefs=None,
                              nestMin=None, objErrTol=None, extCalTime=None, extCapInterval=None, markerOffsets=None,
-                             gridOffset=None, markerSides=None):
+                             gridOffset=None, markerSides=None, extrinTransforms=None):
         if fileType == 'common':
             self._refineWindow = refineWindow
             self._numIter = numIter
@@ -253,7 +264,8 @@ class Calibration:
             self._markerOffsets = markerOffsets
             self._gridOffset = gridOffset
             self._markerSides = markerSides
-        return
+            self.extrinTransforms = extrinTransforms
+        return True
 
     def _write_common_to_file(self, filename):
         calibParams = dict(refineWindow=self._refineWindow,
@@ -263,7 +275,7 @@ class Calibration:
         json.dump(calibParams, fd)
         fd.close()
         print 'Successfully written common calibration to file.'
-        return
+        return True
 
     def _read_common_from_file(self, filename):
         # Load params from .cfg
@@ -292,7 +304,7 @@ class Calibration:
         json.dump(calibParams, fd)
         fd.close()
         print 'Successfully written intrinsic calibration to file.'
-        return
+        return True
 
     def _read_intrin_from_file(self, filename):
         # Load params from .cfg
@@ -313,6 +325,11 @@ class Calibration:
         return True, calibParams
 
     def _write_extrin_to_file(self, filename):
+        extrinTransformsFlat = {}
+        for nodeKey, transform in self.extrinTransforms.iteritems():
+            extrinTransformsFlat[nodeKey] = [transform[1]]
+            for x in transform[0].flat:
+                extrinTransformsFlat[nodeKey].append(x)
         calibParams = dict(extPatternType=self._extPatternType,
                            extPatternSize=self._extPatternSize,
                            extPatternDimension=self._extPatternDimension,
@@ -321,12 +338,13 @@ class Calibration:
                            extCapInterval=self._extCapInterval,
                            markerOffsets=self._markerOffsets,
                            gridOffset=self._gridOffset,
-                           markerSides=self._markerSides)
+                           markerSides=self._markerSides,
+                           extrinTransforms=extrinTransformsFlat)
         fd = open(filename, 'w')
         json.dump(calibParams, fd)
         fd.close()
         print 'Successfully written extrinsic calibration to file.'
-        return
+        return True
 
     def _read_extrin_from_file(self, filename):
         # Load params from .cfg
@@ -336,7 +354,34 @@ class Calibration:
         if calibParams is None:
             return False, None
         calibParams['extPatternSize'] = tuple(calibParams['extPatternSize'])
+        # Rectify extrinsic transforms dictionary
+        extrinTransforms = {}
+        for nodeKey, flatTransform in calibParams['extrinTransforms'].iteritems():
+            extrinTransforms[nodeKey] = (np.float64(flatTransform[1:]).reshape((4, 4)), flatTransform[0])
+        calibParams['extrinTransforms'] = extrinTransforms
         return True, calibParams
+
+    def _write_target_to_file(self, filename):
+        fd = open(filename, 'w')
+        targetCopy = self._calibTarget.copy()
+        for key in targetCopy.keys():
+            targetCopy[key] = list(targetCopy[key].flat)
+        json.dump(targetCopy, fd)
+        fd.close()
+        return True
+
+    def _read_target_from_file(self, filename):
+        fd = open(filename)
+        target = json.load(fd)
+        for key in target.keys():
+            target[key] = np.array(target[key], dtype=np.float32).reshape((4, 4))
+        fd.close()
+        if len(target) == 4:
+            self._calibTarget = target
+            return True
+        else:
+            self._calibTarget = None
+            return False
 
     def get_intrinsics(self):
         return self._camMatrix, self._distCoefs
@@ -459,7 +504,7 @@ class Calibration:
             self._netRef.send_comms_all('Success')
         else:
             print 'Unable to calibrate local scene data, cannot continue.'
-            return 1
+            return False
         # Wait for slave data to arrive
         slaveData = {}
         startTime = time.time()
@@ -481,7 +526,7 @@ class Calibration:
         # If not all slaves submitted data, end calibration
         if len(slaveData) != self._netRef.num_connected():
             print 'Did not receive local data from all slaves. Cannot continue.'
-            return 1
+            return False
         # Unpack data packets and correct time wrt Master
         for addr in slaveData.keys():
             offsetTime = self._netRef.slaveSyncTimes[addr]
@@ -491,14 +536,19 @@ class Calibration:
         extrinData = slaveData.copy()
         extrinData['localhost'] = localTargets
         del slaveData, localTargets
-        saveData = shelve.open('extrinData')
-        saveData['extrinData'] = extrinData
-        saveData.close()
+        # saveData = shelve.open('extrinData')
+        # saveData['extrinData'] = extrinData
+        # saveData.close()
+        # return False
         # Determine optimal calibration sequence by identifying pairs of nodes, from Master out
-        # Return transforms wrt Master and send calibration complete command to slaves.
-        print 'Extrinsic calibration successful.'
-        self._netRef.send_comms_all('Success')
-        return 0
+        ret = self._extrin_calibration(extrinData, 0.1)
+        # Return transforms wrt Master.
+        if ret:
+            print 'Extrinsic calibration successful.'
+            return True
+        else:
+            print 'Extrinsic calibration failed.'
+            return False
 
     # Function to gather extrinsic calibration data for a nominated time calTime then send data to the Master Node
     def _calibrate_ext_slave(self):
@@ -532,21 +582,21 @@ class Calibration:
         frameCount = 0
         numFrames = len(imgList)
         print 'Searching captured scene (%d frames) for valid frames...' % numFrames
-        currTime = time.time()
-        lastCheckTime = currTime
         for frame, currTime in zip(imgList, timeList):
+            frameCopy = frame.copy()
+            frameCount += 1
             # Search for square grid
             ret, corners = cv2.findChessboardCorners(frame, self._extPatternSize, None)
             if ret:
                 cv2.cornerSubPix(frame, corners, self._refineWindow, (-1, -1), self._criteria)
-                side = self._find_side(frame, corners)
+                side = self._find_side(frameCopy, corners)
                 if side is not None:
-                    foundTargets.append((side, corners, currTime))
-                    print 'Count %d\t Found Side: %s\tINV %d' % (len(foundTargets), side[0], side[1])
-                    sideString = 'Found Side: %s\tINV %d' % (side[0], side[1])
+                    foundTargets.append((side, corners[::-1], currTime))
+                    print 'Frame %d/%d\tFound Side %s\tINV %d' % (frameCount, numFrames, side[0], side[1])
+                    sideString = 'Found Side %s\tINV %d' % (side[0], side[1])
                 else:
-                    print 'Unable to determine side in frame %d.' % frameCount
-                    sideString = 'Unable to find side in frame %d' % frameCount
+                    sideString = 'Frame %d/%d\tUnable to determine side.' % (frameCount, numFrames)
+                    print sideString
 
                 if __debug__:
                     cv2.drawChessboardCorners(frameCopy, self._extPatternSize, corners, True)
@@ -556,37 +606,61 @@ class Calibration:
                     cv2.waitKey(100)
 
             elif __debug__:
+                print 'Frame %d/%d\tUnable to find grid.' % (frameCount, numFrames)
                 cv2.putText(frameCopy, 'Unable to locate calibration grid', (10, frameCopy.shape[0] - 10),
                             cv2.FONT_HERSHEY_PLAIN, 2, (255, 255, 255), 2)
                 cv2.imshow('Extrinsic Calibration', frameCopy)
                 cv2.waitKey(100)
-            frameCount += 1
-            currTime = time.time()
-            if currTime - lastCheckTime > 10:
-                lastCheckTime = time.time()
-                print '%d%% complete.' % int(frameCount * 100.0 / numFrames)
 
         if __debug__:
             cv2.destroyWindow('Extrinsic Calibration')
 
+        # savedData = shelve.open('foundTargets')
+        # savedData['foundTargets'] = foundTargets
+        # savedData.close()
+        # return True
+
+        # savedData = shelve.open('foundTargets')
+        # foundTargets = savedData['foundTargets']
+        # savedData.close()
+
         # Parse valid frames for extrinsic data
         if len(foundTargets):
-            print 'Parsing valid frames for intrinsic data...'
+            print 'Parsing valid frames (%d/%d) for intrinsic data...' % (len(foundTargets), numFrames)
             returnTargets = []
             objPoints = self._gen_objp_grid(self._extPatternType, self._extPatternSize, self._extPatternDimension)
+            reducedObjPoints = self._outside_corners(objPoints).T
+            numTargets = len(foundTargets)
+            targetCount = 0
             for side, corners, capTime in foundTargets:
-                rot, trans, objErr = self._solve_rpp(objPoints, corners)
+                reducedCorners = self._outside_corners(corners)
+                rot, trans, objErr = self._solve_rpp(reducedObjPoints, reducedCorners)
+                targetCount += 1
+                print 'Frame %d/%d Processed.' % (targetCount, numTargets)
                 if objErr < self._objErrTol:
                     transform = np.hstack((np.vstack((rot, np.zeros((1, 3)))), np.vstack((trans, 1))))
                     returnTargets.append((side, transform, capTime, objErr))
+                    print 'Frame %d ObjErr = %f < Tolerance %f, valid frame.' % (targetCount, objErr, self._objErrTol)
+                else:
+                    print 'Frame %d ObjErr = %f > Tolerance %f, discarded frame.' % (
+                    targetCount, objErr, self._objErrTol)
             return returnTargets
         else:
             print 'Unable to find valid frames in scene capture.'
             return None
 
+    # Returns points clockwise from top left of a chessboard pattern (indexed top left to bottom right)
+    def _outside_corners(self, points):
+        returnPoints = np.zeros_like(points)[:4]
+        returnPoints[0] = points[0]
+        returnPoints[1] = points[self._extPatternSize[0] - 1]
+        returnPoints[2] = points[-1]
+        returnPoints[3] = points[np.prod(self._extPatternSize) - self._extPatternSize[0]]
+        return returnPoints
+
     def _package_extrin_data(self, side, transform, capTime, objErr):
         packet = '%s:%d' % (side[0], side[1])
-        for val in transform.flatten(1):
+        for val in transform.flat:
             packet += ':%s' % repr(val)
         packet += ':%s' % repr(capTime)
         packet += ':%s' % repr(objErr)
@@ -680,7 +754,7 @@ class Calibration:
         # savedData = shelve.open('targetData')
         # savedData['targetData'] = targetSides
         # savedData.close()
-        # return False
+        # return True
         #
         # savedData = shelve.open('targetData')
         # targetSides = savedData['targetData']
@@ -694,28 +768,6 @@ class Calibration:
             return True
         else:
             print 'Target calibration failed.'
-            return False
-
-    def _save_target(self, filename):
-        fd = open(filename, 'w')
-        targetCopy = self._calibTarget.copy()
-        for key in targetCopy.keys():
-            targetCopy[key] = list(targetCopy[key].flatten(1))
-        json.dump(targetCopy, fd)
-        fd.close()
-        return
-
-    def _load_target(self, filename):
-        fd = open(filename)
-        target = json.load(fd)
-        for key in target.keys():
-            target[key] = np.array(target[key], dtype=np.float32).reshape((4, 4)).T
-        fd.close()
-        if len(target) == 4:
-            self._calibTarget = target
-            return True
-        else:
-            self._calibTarget = None
             return False
 
     def get_target(self):
@@ -825,11 +877,7 @@ class Calibration:
                 break
         corners = np.array(corners, dtype=np.float32).reshape((-1, 2))
         objCandidates = self._gen_objp_grid(self._extPatternType, self._extPatternSize, self._extPatternDimension)[:, :2]
-        objWarps = np.zeros((4, 2), dtype=np.float32)
-        objWarps[0] = objCandidates[0]
-        objWarps[1] = objCandidates[self._extPatternSize[0] - 1]
-        objWarps[2] = objCandidates[-1]
-        objWarps[3] = objCandidates[np.prod(self._extPatternSize) - self._extPatternSize[0]]
+        objWarps = self._outside_corners(objCandidates)
         # Offset object points to center of image
         warpDist = spatial.distance.squareform(spatial.distance.pdist(corners))
         warpOffset = np.zeros((1, 2), dtype=np.float32)
@@ -936,33 +984,43 @@ class Calibration:
             return False
         pairsDict = {}
         # Computer homologous transformation matrix for each pair and amalgamate
-        objPoints = self._gen_objp_grid(self._extPatternType, self._extPatternSize, self._extPatternDimension).T
+        objPoints = self._gen_objp_grid(self._extPatternType, self._extPatternSize, self._extPatternDimension)
+        objPoints = self._outside_corners(objPoints).T
+        numTargets = len(targets)
+        print 'Parsing %d target pairs with error tolerance: %f' % (numTargets, self._objErrTol)
+        parseCounter = 0
         for side1, center1, side2, center2 in targets:
+            parseCounter += 1
             # Calc position wrt to camera
-            center1 = center1[::-1]
-            center2 = center2[::-1]
+            center1 = self._outside_corners(center1[::-1])
+            center2 = self._outside_corners(center2[::-1])
             rot1, trans1, objErr1 = self._solve_rpp(objPoints, center1)
             rot2, trans2, objErr2 = self._solve_rpp(objPoints, center2)
             if objErr1 < self._objErrTol and objErr2 < self._objErrTol:
-                # Calc transform of 2 to 1
+                # Calc transform of 1 to 2
                 # Invert 2nd side
                 side2Inverted = self._invert_transform_matrix(self._form_transform_matrix(rot2, trans2))
                 # Compound homologous transforms
                 transform1 = self._form_transform_matrix(rot1, trans1)
-                transform2to1 = np.dot(side2Inverted, transform1)
+                transform1to2 = np.dot(side2Inverted, transform1)
 
                 keyStr = side1[0] + side2[0]
                 if keyStr not in pairsDict and keyStr[::-1] not in pairsDict:
                     # Add new transformation matrix to dictionary
-                    pairsDict[keyStr] = (transform2to1, 1)
+                    pairsDict[keyStr] = (transform1to2, 1)
                 elif keyStr in pairsDict:
                     # Add new matrix to previous sum to average out later
-                    pairsDict[keyStr] = (pairsDict[keyStr][0] + transform2to1, pairsDict[keyStr][1] + 1)
+                    pairsDict[keyStr] = (pairsDict[keyStr][0] + transform1to2, pairsDict[keyStr][1] + 1)
                 elif keyStr[::-1] in pairsDict:
                     # Reverse transformation matrix and add to previous sum
-                    transform1to2 = self._invert_transform_matrix(transform2to1)
-                    pairsDict[keyStr[::-1]] = (pairsDict[keyStr[::-1]][0] + transform1to2,
+                    transform2to1 = self._invert_transform_matrix(transform1to2)
+                    pairsDict[keyStr[::-1]] = (pairsDict[keyStr[::-1]][0] + transform2to1,
                                                pairsDict[keyStr[::-1]][1] + 1)
+                print 'Pair %d/%d\t(%s,%s)\tValid\tObjErr1: %f\tObjErr2: %f' % (parseCounter, numTargets, side1[0],
+                                                                                side2[0], objErr1, objErr2)
+            else:
+                print 'Pair %d/%d\t(%s,%s)\tInvalid.\tObjErr1: %f\tObjErr2: %f' % (parseCounter, numTargets, side1[0],
+                                                                                   side2[0], objErr1, objErr2)
         # Compute averages
         if len(pairsDict.keys()) == 4:
             for key, value in pairsDict.iteritems():
@@ -970,17 +1028,17 @@ class Calibration:
             # Generate output dictionary of transformation matrices from <Side> to North
             transformDict = {'N': np.eye(4)}
             if 'NE' in pairsDict:
-                transformDict['E'] = pairsDict['NE']
+                transformDict['E'] = self._invert_transform_matrix(pairsDict['NE'])
             else:
-                transformDict['E'] = self._invert_transform_matrix(pairsDict['EN'])
+                transformDict['E'] = pairsDict['EN']
             if 'NW' in pairsDict:
-                transformDict['W'] = pairsDict['NW']
+                transformDict['W'] = self._invert_transform_matrix(pairsDict['NW'])
             else:
-                transformDict['W'] = self._invert_transform_matrix(pairsDict['WN'])
+                transformDict['W'] = pairsDict['WN']
             if 'SE' in pairsDict:
-                transformDict['S'] = np.dot(transformDict['E'], self._invert_transform_matrix(pairsDict['SE']))
+                transformDict['S'] = np.dot(transformDict['E'], pairsDict['SE'])
             else:
-                transformDict['S'] = np.dot(transformDict['E'], pairsDict['ES'])
+                transformDict['S'] = np.dot(transformDict['E'], self._invert_transform_matrix(pairsDict['ES']))
             return transformDict
         else:
             print 'Could not generate target face pair RPP solutions. (Generated %d of %d)' % (len(pairsDict.keys()), 4)
@@ -993,7 +1051,6 @@ class Calibration:
 
     def _form_transform_matrix(self, rot, trans):
         return np.hstack((np.vstack((rot, np.zeros((1, 3)))), np.vstack((trans, 1))))
-
 
     def _parse_sides(self, side1, side2):
         # Check orientations match
@@ -1008,17 +1065,9 @@ class Calibration:
     def _find_side(self, image, imgPoints):
         objCandidates = self._gen_objp_grid(self._extPatternType, self._extPatternSize, self._extPatternDimension)[:, :2]
         imgCandidates = imgPoints.reshape((-1, 2))
-        objWarps = np.zeros((4, 2), dtype=np.float32)
-        imgWarps = objWarps.copy()
-        objWarps[0] = objCandidates[0]
-        objWarps[1] = objCandidates[self._extPatternSize[0] - 1]
-        objWarps[2] = objCandidates[-1]
-        objWarps[3] = objCandidates[np.prod(self._extPatternSize) - self._extPatternSize[0]]
+        objWarps = self._outside_corners(objCandidates)
         # changed order because of stupid corner indexing update in OpenCV 3.0
-        imgWarps[0] = imgCandidates[-1]
-        imgWarps[1] = imgCandidates[np.prod(self._extPatternSize) - self._extPatternSize[0]]
-        imgWarps[2] = imgCandidates[0]
-        imgWarps[3] = imgCandidates[self._extPatternSize[0] - 1]
+        imgWarps = self._outside_corners(imgCandidates[::-1])
         # Offset object points to center of image
         warpDist = spatial.distance.squareform(spatial.distance.pdist(imgWarps))
         warpOffset = np.zeros((1, 2), dtype=np.float32)
@@ -1170,109 +1219,212 @@ class Calibration:
             (imgPointsUndistorted[:, 0, 0].reshape((-1, 1)), imgPointsUndistorted[:, 0, 1].reshape((-1, 1)))).T
         return rpp(objPoints.copy(), imgPointsUndistorted)
 
-
-def extrin_calibration(extrinData, binSize):
-    # Construct data matrix monotonically ordered by time and normalise times/binSize
-    binSizeCopy = binSize
-    sortedData = []
-    for addr in extrinData.keys():
-        idxCount = 0
-        for side, transform, capTime in extrinData[addr]:
-            sortedData.append((addr, idxCount, capTime))
-            idxCount += 1
-    sortedData = np.array(sortedData, dtype=[('addr', 'S16'), ('idx', 'i4'), ('time', 'f8')])
-    sortedData.sort(order='time')
-    sortedTime = sortedData['time']
-    sortedTime -= sortedTime.min() * np.ones_like(sortedTime)
-    binSizeCopy = binSizeCopy / (sortedTime.max() - sortedTime.min())
-    sortedTime /= (sortedTime.max() - sortedTime.min()) * np.ones_like(sortedTime)
-    # Group pairs of data together based on time proximity, assign weighting as function of time discrepancy
-    obsPairs = {}
-    maxIdxNums = len(str(len(sortedTime)))
-    for idx in range(len(sortedTime)):
-        idxOffset = 1
-        while idx + idxOffset < len(sortedTime) and sortedTime[idx + idxOffset] - sortedTime[idx] < binSizeCopy:
-            str1 = str(idx).zfill(maxIdxNums)
-            str2 = str(idx + idxOffset).zfill(maxIdxNums)
-            if sortedData['addr'][idx] != sortedData['addr'][
-                        idx + idxOffset] and str1 + str2 not in obsPairs and str2 + str1 not in obsPairs:
-                weighting = 1.0 - ((sortedTime[idx + idxOffset] - sortedTime[idx]) / binSizeCopy)
-                obsPairs[str1 + str2] = (idx, idx + idxOffset, weighting)
-            idxOffset += 1
-    # Prepare observation pair data for calibration
-    calibPairs = {}
-    for idx1, idx2, weighting in obsPairs.values():
-        ob1 = sortedData[['addr', 'idx']][idx1]
-        ob2 = sortedData[['addr', 'idx']][idx2]
-        if ob1[0] + ':' + ob2[0] in calibPairs:
-            calibPairs[ob1[0] + ':' + ob2[0]].append(((ob1[0], ob2[0]),
+    # Takes collated data from every node and performs the final extrinsic calibration
+    def _extrin_calibration(self, extrinData, binSize):
+        # Construct data matrix monotonically ordered by time and normalise times/binSize
+        binSizeCopy = binSize
+        sortedData = []
+        for addr in extrinData.keys():
+            idxCount = 0
+            for side, transform, capTime, objErr in extrinData[addr]:
+                sortedData.append((addr, idxCount, capTime, objErr))
+                idxCount += 1
+        sortedData = np.array(sortedData, dtype=[('addr', 'S16'), ('idx', 'i4'), ('time', 'f8'), ('objErr', 'f8')])
+        sortedData.sort(order='time')
+        sortedTime = sortedData['time']
+        sortedTime -= sortedTime.min() * np.ones_like(sortedTime)
+        binSizeCopy = binSizeCopy / (sortedTime.max() - sortedTime.min())
+        sortedTime /= (sortedTime.max() - sortedTime.min()) * np.ones_like(sortedTime)
+        # Group pairs of data together based on time proximity, assign weighting as function of time discrepancy
+        obsPairs = {}
+        maxIdxNums = len(str(len(sortedTime)))
+        for idx in range(len(sortedTime)):
+            idxOffset = 1
+            while idx + idxOffset < len(sortedTime) and sortedTime[idx + idxOffset] - sortedTime[idx] < binSizeCopy:
+                str1 = str(idx).zfill(maxIdxNums)
+                str2 = str(idx + idxOffset).zfill(maxIdxNums)
+                if sortedData['addr'][idx] != sortedData['addr'][
+                            idx + idxOffset] and str1 + str2 not in obsPairs and str2 + str1 not in obsPairs:
+                    weighting = 1.0 - ((sortedTime[idx + idxOffset] - sortedTime[idx]) / binSizeCopy)
+                    obsPairs[str1 + str2] = (idx, idx + idxOffset, weighting)
+                idxOffset += 1
+        # Prepare observation pair data for calibration
+        calibPairs = {}
+        for idx1, idx2, weighting in obsPairs.values():
+            ob1 = sortedData[['addr', 'idx']][idx1]
+            ob2 = sortedData[['addr', 'idx']][idx2]
+            if ob1[0] + ':' + ob2[0] in calibPairs:
+                calibPairs[ob1[0] + ':' + ob2[0]].append(((ob1[0], ob2[0]),
+                                                          (extrinData[ob1[0]][ob1[1]], extrinData[ob2[0]][ob2[1]]),
+                                                          weighting))
+            elif ob2[0] + ':' + ob1[0] in calibPairs:
+                calibPairs[ob2[0] + ':' + ob1[0]].append(((ob2[0], ob1[0]),
+                                                          (extrinData[ob2[0]][ob2[1]], extrinData[ob1[0]][ob1[1]]),
+                                                          weighting))
+            else:
+                calibPairs[ob1[0] + ':' + ob2[0]] = [((ob1[0], ob2[0]),
                                                       (extrinData[ob1[0]][ob1[1]], extrinData[ob2[0]][ob2[1]]),
-                                                      weighting))
-        elif ob2[0] + ':' + ob1[0] in calibPairs:
-            calibPairs[ob2[0] + ':' + ob1[0]].append(((ob2[0], ob1[0]),
-                                                      (extrinData[ob2[0]][ob2[1]], extrinData[ob1[0]][ob1[1]]),
-                                                      weighting))
+                                                      weighting)]
+        # Construct expanding node tree from Master out mapping node connections, check if there is a valid path to master
+        # from each slave Node
+        nodePairs = {}
+        for pairKey, pair in calibPairs.iteritems():
+            nodePairs[pairKey] = pair[0][0]
+        treeHierarchy = self._construct_node_tree(nodePairs, 'localhost', len(extrinData))
+        if treeHierarchy is None:
+            print 'Unable to map each slave node back to the master, please adjust camera layout.'
+            exit()
+        # Collapse multiples of same pair (ie same 2 node pairings) using time window and RPP weightings
+        poses = self._collapse_compute_extrin_multiples(calibPairs, 10)
+        # Compute position of each camera with respect to Master and return
+        self.extrinTransforms = self._compute_relative_transforms(poses, treeHierarchy)
+        return True
+
+    def _compute_relative_transforms(self, poseTransforms, nodeTree):
+        outputTransforms = {}
+        # For each node in the system
+        for nodeKey, parentNode in nodeTree.iteritems():
+            # Skip over masternode
+            if nodeKey == 'localhost':
+                continue
+            # Generate its nodepath back to the master/localhost
+            nodePath = [nodeKey]
+            nextNode = nodeKey
+            while nextNode != 'localhost':
+                nextNode = nodeTree[nextNode][0]
+                nodePath.append(nextNode)
+            # Generate the transform along the nodepath
+            transform = np.eye(4)
+            weighting = 1
+            idx = 0
+            while idx + 1 < len(nodePath):
+                child = nodePath[idx]
+                parent = nodePath[idx + 1]
+                # find the next transform matching the nodes
+                str1 = child + ':' + parent
+                str2 = parent + ':' + child
+                if str1 in poseTransforms:
+                    transform = np.dot(poseTransforms[str1][0], transform)
+                    weighting *= poseTransforms[str1][1]
+                else:
+                    transform = np.dot(self._invert_transform_matrix(poseTransforms[str2][0]), transform)
+                    weighting *= poseTransforms[str2][1]
+                idx += 1
+            outputTransforms[nodeKey] = (transform, weighting)
+        return outputTransforms
+
+    # Collapse multiple observations for the same node pairing based on weighting and compute direct extrinsic relation
+    def _collapse_compute_extrin_multiples(self, calibPairs, nTopCandidates, weightAlpha=0.8):
+        poseTransforms = {}
+        for nodeKey, nodePairs in calibPairs.iteritems():
+            # Isolate time weightings, find index of min(nTopCandidates,all)
+            weightings = np.array(list(enumerate(map(list, zip(*nodePairs))[2])),
+                                  dtype=[('idx', 'i4'), ('weighting', 'f8')])
+            if len(nodePairs) < nTopCandidates:
+                topWeightings = np.sort(weightings, order='weighting')[::-1]
+            else:
+                topWeightings = np.sort(weightings, order='weighting')[-1:-1 - nTopCandidates:-1]
+            # For the top time weightings compute the respective normalised pose error weightings and combine
+            combWeightings = []
+            for idx, timeWeight in topWeightings:
+                combWeightings.append((idx, timeWeight, 1 / (nodePairs[idx][1][0][3] + nodePairs[idx][1][1][3]), 0.0))
+            combWeightings = np.array(combWeightings, dtype=[('idx', 'i8'), ('time', 'f8'),
+                                                             ('pose', 'f8'), ('comb', 'f8')])
+            combWeightings['pose'] = combWeightings['pose'] / combWeightings['pose'].max()
+            combWeightings['comb'] = combWeightings['pose'] * weightAlpha + combWeightings['time'] * (1.0 - weightAlpha)
+            # Compute the relative homogenous pose transform matrix for the best candidate
+            topData = np.sort(combWeightings, order='comb')[-1]
+            topCandidateMatrices = calibPairs[nodeKey][topData[0]][1]
+            poseTransforms[nodeKey] = (self._calc_extrin_transform(topCandidateMatrices),
+                                       topData[3])
+        return poseTransforms
+
+    # Uses the 2 extrinsic position information sets to calculate the transformation of node 1 to node 2
+    def _calc_extrin_transform(self, nodePair):
+        # Isolate components
+        p1Side = nodePair[0][0][0]
+        p2Side = nodePair[1][0][0]
+        p1Inv = nodePair[0][0][1]
+        p2Inv = nodePair[1][0][1]
+        p1Transform = nodePair[0][1]
+        p2Transform = nodePair[1][1]
+        # Correct poses for target inversion
+        if p1Inv or p2Inv:
+            invRotMat = np.eye(4)
+            invRotMat[0, 0] = -1
+            invRotMat[1, 1] = -1
+            invRotMat[0, 3] = -(self._extPatternSize[0] - 1) * self._extPatternDimension
+            invRotMat[1, 3] = (self._extPatternSize[1] - 1) * self._extPatternDimension
+            if p1Inv:
+                p1Transform = np.dot(invRotMat, p1Transform)
+            if p2Inv:
+                p2Transform = np.dot(invRotMat, p2Transform)
+        # Construct correct target transform
+        # Transform is 1->N->2 = inv([2])*[1]
+        targTransform = np.dot(self._invert_transform_matrix(self._calibTarget[p2Side]), self._calibTarget[p1Side])
+        # Invert pose 1 transform
+        p1Transform = self._invert_transform_matrix(p1Transform)
+        # Compute Camera relation
+        transform1to2 = np.dot(np.dot(p2Transform, targTransform), p1Transform)
+        return transform1to2
+
+    # Build tree down from the root master node to map connections efficiently
+    def _construct_node_tree(self, calibPairs, rootNode, numNodes):
+        treeDict = {rootNode: (None, 0)}
+        pairsCopy = calibPairs.copy()
+        keysToDelete = []
+        candidateNodes = [rootNode]
+        checkedNodes = []
+        while len(pairsCopy) and len(candidateNodes):
+            # Get next candidate node
+            targetNode = candidateNodes[0]
+            for currKey in keysToDelete:
+                if currKey in pairsCopy:
+                    del pairsCopy[currKey]
+            keysToDelete = []
+            for pairKey, pairList in pairsCopy.iteritems():
+                node1 = pairList[0]
+                node2 = pairList[1]
+                if node1 == targetNode:
+                    treeDict, checkedNodes, candidateNodes = self._add_node_to_tree(node1, node2, treeDict,
+                                                                                    checkedNodes, candidateNodes)
+                    keysToDelete.append(pairKey)
+                elif node2 == targetNode:
+                    treeDict, checkedNodes, candidateNodes = self._add_node_to_tree(node2, node1, treeDict,
+                                                                                    checkedNodes, candidateNodes)
+                    keysToDelete.append(pairKey)
+            # Move target node from candidate list to checked list
+            del candidateNodes[0]
+            checkedNodes.append(targetNode)
+
+        if len(treeDict) == numNodes:
+            return treeDict
         else:
-            calibPairs[ob1[0] + ':' + ob2[0]] = [((ob1[0], ob2[0]),
-                                                  (extrinData[ob1[0]][ob1[1]], extrinData[ob2[0]][ob2[1]]),
-                                                  weighting)]
-    # Construct expanding node tree from Master out mapping node connections, check if there is a valid path to master
-    # from each slave Node
-    nodePairs = {}
-    for pairKey, pair in calibPairs.iteritems():
-        nodePairs[pairKey] = pair[0][0]
-    treeHierarchy = construct_node_tree(nodePairs, 'localhost', len(extrinData))
-    if treeHierarchy is None:
-        print 'Unable to map each slave node back to the master, please adjust camera layout.'
-        exit()
-    # Collapse multiples of same pair (ie same 2 node pairings) using time window weightings
-    collapse_compute_extrin_multiples(calibPairs, 10)
-    # Compute position of each camera with respect to Master and return
+            return None
 
-    return 0
-
-
-# Collapse multiple observations for the same node pairing based on weighting and compute direct extrinsic relation
-def collapse_compute_extrin_multiples(calibPairs, nTopCandidates):
-    for nodeKey, nodePairs in calibPairs.iteritems():
-        # Isolate weightings, find index of min(nTopCandidates,all)
-        weightings = np.array(list(enumerate(map(list, zip(*nodePairs))[2])),
-                              dtype=[('idx', 'i4'), ('weighting', 'f8')])
-        if len(nodePairs) < nTopCandidates:
-            topWeightings = np.sort(weightings, order='weighting')[::-1]
+    # Add node to tree
+    def _add_node_to_tree(self, node1, node2, treeDict, checkedNodes, candidateNodes):
+        if node2 not in treeDict:
+            treeDict[node2] = (node1, self._get_node_level(node1, treeDict) + 1)
         else:
-            topWeightings = np.sort(weightings, order='weighting')[-1:-1 - nTopCandidates:-1]
-        # Reject outliers in top candidates and determine extrinsic PnP solution of remaining pairs
-        topWeightingsOutliers = mad_based_outlier(topWeightings['weighting'])
-        topNodes = []
-        loopCount = 0
-        for idx, weighting in topWeightings:
-            if not topWeightingsOutliers[loopCount]:
-                pnpPosition = calc_extrin_pnp(nodePairs[idx][1:])
-                topNodes.append(pnpPosition)
-            loopCount += 1
+            newNodeLevel = self._get_node_level(node1, treeDict) + 1
+            if newNodeLevel < treeDict[node2][1]:
+                treeDict[node2] = (node1, newNodeLevel)
+        if node2 not in candidateNodes and node2 not in checkedNodes:
+            candidateNodes.append(node2)
+        return treeDict, checkedNodes, candidateNodes
 
-    return 0
-
-
-# Uses the 2 extrinsic position information sets to calculate the position of node 2 (in the namekey) wrt node 1
-def calc_extrin_pnp(nodePair):
-    # temporary line to load target without main program (target loader already integrated)
-    target = tmp_load_target('target.cfg')
-
-    test = 1
-
-
-def tmp_load_target(filename):
-    fd = open(filename)
-    target = json.load(fd)
-    for key in target.keys():
-        target[key] = np.array(target[key], dtype=np.float32).reshape((4, 4)).T
-    fd.close()
-    if len(target) == 4:
-        return target
-    else:
-        return None
+    # Checks entire tree for membership, returns level on tree
+    def _get_node_level(self, targetNode, treeDict):
+        nodeLevel = 0
+        node = targetNode
+        while node in treeDict:
+            if treeDict[node][0] is None:
+                break
+            else:
+                node = treeDict[node][0]
+                nodeLevel += 1
+        return nodeLevel
 
 
 def mad_based_outlier(points, thresh=3.5):
@@ -1286,112 +1438,24 @@ def mad_based_outlier(points, thresh=3.5):
     return modifiedZScore > thresh
 
 
-# Checks entire tree for membership, returns level on tree
-def get_node_level(targetNode, treeDict):
-    nodeLevel = 0
-    node = targetNode
-    while node in treeDict:
-        if treeDict[node][0] is None:
-            break
-        else:
-            node = treeDict[node][0]
-            nodeLevel += 1
-    return nodeLevel
-
-
-# Add node to tree
-def add_node_to_tree(node1, node2, treeDict, checkedNodes, candidateNodes):
-    if node2 not in treeDict:
-        treeDict[node2] = (node1, get_node_level(node1, treeDict) + 1)
-    else:
-        newNodeLevel = get_node_level(node1, treeDict) + 1
-        if newNodeLevel < treeDict[node2][1]:
-            treeDict[node2] = (node1, newNodeLevel)
-    if node2 not in candidateNodes and node2 not in checkedNodes:
-        candidateNodes.append(node2)
-    return treeDict, checkedNodes, candidateNodes
-
-
-# Build tree down from the root master node to map connections efficiently
-def construct_node_tree(calibPairs, rootNode, numNodes):
-    treeDict = {rootNode: (None, 0)}
-    pairsCopy = calibPairs.copy()
-    keysToDelete = []
-    candidateNodes = [rootNode]
-    checkedNodes = []
-    while len(pairsCopy) and len(candidateNodes):
-        # Get next candidate node
-        targetNode = candidateNodes[0]
-        for currKey in keysToDelete:
-            if currKey in pairsCopy:
-                del pairsCopy[currKey]
-        keysToDelete = []
-        for pairKey, pairList in pairsCopy.iteritems():
-            node1 = pairList[0]
-            node2 = pairList[1]
-            if node1 == targetNode:
-                treeDict, checkedNodes, candidateNodes = add_node_to_tree(node1, node2, treeDict, checkedNodes,
-                                                                          candidateNodes)
-                keysToDelete.append(pairKey)
-            elif node2 == targetNode:
-                treeDict, checkedNodes, candidateNodes = add_node_to_tree(node2, node1, treeDict, checkedNodes,
-                                                                          candidateNodes)
-                keysToDelete.append(pairKey)
-        # Move target node from candidate list to checked list
-        del candidateNodes[0]
-        checkedNodes.append(targetNode)
-
-    if len(treeDict) == numNodes:
-        return treeDict
-    else:
-        return None
-
-
-# def test_node_tree_constructor(numTests, numNodes, nodePC):
-#     import random
-#     testSummary = []
-#     for testIdx in range(numTests):
-#         testNodes = [str(x) for x in range(numNodes)]
-#         testPairs = {}
-#         testKey = 0
-#         for targetNode in testNodes:
-#             for subNode in testNodes:
-#                 randNum = random.randint(0, 100)
-#                 if subNode != targetNode and randNum < nodePC:
-#                     testPairs[str(testKey)] = (targetNode, subNode)
-#                     testKey += 1
-#         treeDict = construct_node_tree(testPairs, '0', numNodes)
-#         if treeDict is None:
-#             testSummary.append((False, treeDict, testPairs))
-#         else:
-#             testSummary.append((True, treeDict, testPairs))
-#     return testSummary
-
-
 if __name__ == '__main__':
     from camOps import CamHandler
 
     cam = CamHandler(0)
     net = None
-    calib = Calibration(cam, net, commonFilename='commonCalib.cfg', intrinFilename='intrinCalib1.cfg', noExtrin=True)
-
-    test = tmp_load_target('target.cfg')
+    calib = Calibration(cam, net, commonFilename='commonCalib.cfg', intrinFilename='intrinCalib1.cfg',
+                        targetFilename='targetCalib.cfg', noExtrin=True)
 
     # ret = calib._calibrate_target()
     # if ret:
-    #     calib._save_target('target.cfg')
-
-    # numTrials = 100
-    # numNodes = 10
-    # linkChance = 15
-    # summary = test_node_tree_constructor(numTrials, numNodes, linkChance)
-    # successNum = 0
-    # for fullLink, foo, bar in summary:
-    #     if fullLink == True:
-    #         successNum += 1
-    # print 'For %d trials of %d nodes with a %d percent chance of node linkage, full linkage success rate = %f percent.' % (numTrials, numNodes, linkChance, float(successNum)/numTrials*100.0)
+    #     calib._write_target_to_file('targetCalib.cfg')
 
     # savedData = shelve.open('extrinData')
     # extrinData = savedData['extrinData']
     # savedData.close()
-    # extrin_calibration(extrinData, 0.1)
+    # ret = calib._extrin_calibration(extrinData, 0.1)
+    # calib._write_extrin_to_file('extrinCalib.cfg')
+    # ret, params = calib._read_extrin_from_file('extrinCalib.cfg')
+    # calib._members_from_params('extrin', **params)
+
+    # Straight On Test 180deg, Host 77cm, 27cm; Slave 74cm, 27cm, Box 30cm

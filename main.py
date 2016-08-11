@@ -67,7 +67,7 @@ def initialise(nodeType):
     # Load parameters or undertake calibration
     if nodeType == 'Master':
         calib = Calibration(cam, net, commonFilename='commonCalib.cfg', intrinFilename='intrinCalib1.cfg',
-                            targetFilename='target.cfg')
+                            targetFilename='targetCalib.cfg')
     else:
         calib = Calibration(cam, net, commonFilename='commonCalib.cfg', intrinFilename='intrinCalib2.cfg')
 

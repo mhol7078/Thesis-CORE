@@ -5,9 +5,11 @@ import time
 import os
 from sys import exit
 from scipy import spatial
-from HSConfig import calibCommonParams as cCP, calibIntParams as cIP, calibExtParams as cEP, miscParams as mP
+from HSConfig import calibCommonParams as cCP, calibIntParams as cIP, calibExtParams as cEP
 from rpp import rpp
 import shelve
+
+__author__ = 'Michael Holmes'
 
 # Thesis Notes:
 # Went for 4 grid 3d pattern because of correspondence problem
@@ -18,19 +20,20 @@ import shelve
 # Dumped circle grids altogether due to clashes with square grids/other circle grids
 # Rewrote calibration capture to suit offline processing
 
-# TODO: Add multi-zonal support post-thesis
-# TODO: RPP node loadsharing, move to C++ wrap
-# TODO: Improve Extrinsic Angular sensitivity - Change extrinsic chessboard to more viewable pattern
-
-##----------------------------------------------------------------##
+# ----------------------------------------------------------------
 #
 # Class to handle all intrinsic and extrinsic camera calibration
 # operations.
 #
-##----------------------------------------------------------------##
+# TODO: Add multi-zonal support post-thesis
+# TODO: RPP node loadsharing, move to C++ wrap
+# TODO: Improve Extrinsic Angular sensitivity - Change extrinsic chessboard to more viewable pattern
+# ----------------------------------------------------------------
 
-# GLOBAL to drive mouse events
-target0 = None
+# ----------------------------------------------------------------
+#               GLOBALS
+# ----------------------------------------------------------------
+target0 = None  # Drives mouse events
 
 
 # Mouse event for manual calibration functions
@@ -56,8 +59,8 @@ class Calibration:
         self._numIter = None
         self._epsIter = None
         self._criteria = None
-        self._camMatrix = None
-        self._distCoefs = None
+        self.camMatrix = None
+        self.distCoefs = None
         self._calibTarget = None
         self._hierarchy = None
         self._nestMin = None
@@ -198,7 +201,7 @@ class Calibration:
                 exit()
             self._netRef.netEventDict['calibSync'].clear()
             # If commanded to calibrate
-            if self._netRef.calibFlag:
+            if self._netRef.netEventDict['doCalib'].isSet():
                 print 'Extrinsic calibration required.'
                 # Load base extrinsic parameters from defaults
                 self._members_from_params('extrin', **cEP)
@@ -212,7 +215,7 @@ class Calibration:
                     exit()
                 self._netRef.netEventDict['calibSync'].clear()
                 # Send extrinsic transforms to Master
-                if not self._netRef.calibFlag:
+                if not self._netRef.netEventDict['doCalib'].isSet():
                     print 'Master aborted extrinsic calibration. Exiting.'
                     exit()
                 print 'Transferring extrinsic calibration data...'
@@ -221,9 +224,9 @@ class Calibration:
                     exit()
                 for side, transform, capTime, objErr in extrinTransforms:
                     data = self._package_extrin_data(side, transform, capTime, objErr)
-                    self._netRef.sendQueue.put(('Calibrate', data))
+                    self._netRef.send_comms('Calibrate', data)
                 print 'Sending transfer complete signal.'
-                self._netRef.sendQueue.put(('Success', None))
+                self._netRef.send_comms('Success', None)
                 # Wait for calibration complete signal from Master
                 print 'Waiting for Master to compile extrinsic calibration.'
                 ret = self._netRef.netEventDict['calibSync'].wait(self._netRef.waitTimeout)
@@ -251,8 +254,8 @@ class Calibration:
             self._intPatternSize = intPatternSize
             self._intPatternDimension = intPatternDimension
             self._intNumImages = intNumImages
-            self._camMatrix = camMatrix
-            self._distCoefs = distCoefs
+            self.camMatrix = camMatrix
+            self.distCoefs = distCoefs
         elif fileType == 'extrin':
             self._extPatternType = extPatternType
             self._extPatternSize = extPatternSize
@@ -290,9 +293,9 @@ class Calibration:
     def _write_intrin_to_file(self, filename):
         camMatrixList = []
         distCoefsList = []
-        for x in self._camMatrix.flat:
+        for x in self.camMatrix.flat:
             camMatrixList.append(x)
-        for x in self._distCoefs.flat:
+        for x in self.distCoefs.flat:
             distCoefsList.append(x)
         calibParams = dict(intPatternType=self._intPatternType,
                            intPatternSize=self._intPatternSize,
@@ -383,9 +386,6 @@ class Calibration:
             self._calibTarget = None
             return False
 
-    def get_intrinsics(self):
-        return self._camMatrix, self._distCoefs
-
     def _gen_objp_grid(self, patternType=None, patternSize=None, patternDimension=None):
         if patternType is None:
             patternType = self._intPatternType
@@ -416,12 +416,12 @@ class Calibration:
         imgPArray = []
         calibCount = 0
         self._camRef.get_frame()
-        h, w = self._camRef.current_frame().shape[:2]
+        h, w = self._camRef.current_frame()[0].shape[:2]
         cv2.namedWindow('Calibration Capture')
         # Capture calibration images
         while calibCount < self._intNumImages:
             self._camRef.get_frame()
-            frameCopy = self._camRef.current_frame()
+            frameCopy = self._camRef.current_frame()[0]
             cv2.imshow('Calibration Capture', frameCopy)
             userIn = cv2.waitKey(50)
             ret = None
@@ -478,11 +478,11 @@ class Calibration:
             cv2.waitKey(1000)
             rotVecs = None
             transVecs = None
-            ret, self._camMatrix, self._distCoefs, rotVecs, transVecs = cv2.calibrateCamera(objPArray, imgPArray,
-                                                                                            (w, h),
-                                                                                            self._camMatrix,
-                                                                                            self._distCoefs, rotVecs,
-                                                                                            transVecs)
+            ret, self.camMatrix, self.distCoefs, rotVecs, transVecs = cv2.calibrateCamera(objPArray, imgPArray,
+                                                                                          (w, h),
+                                                                                          self.camMatrix,
+                                                                                          self.distCoefs, rotVecs,
+                                                                                          transVecs)
             print 'Intrinsic calibration complete.'
             cv2.destroyWindow('Calibration Capture')
             return True
@@ -568,7 +568,7 @@ class Calibration:
         lastCheckTime = startTime - self._extCapInterval - 1
         while currTime - startTime < self.extCalTime:
             self._camRef.get_frame()
-            frameCopy = self._camRef.current_frame()
+            frameCopy = self._camRef.current_frame()[0]
             currTime = time.time()
             if currTime - lastCheckTime > self._extCapInterval:
                 # capFile.write(frameCopy)
@@ -668,7 +668,7 @@ class Calibration:
 
     def _depackage_extrin_data(self, packet):
         splitPack = packet.split(':')
-        side = (splitPack[0], int(splitPack[1]))
+        side = (splitPack[0], bool(splitPack[1]))
         transform = []
         for idx in range(2, 18):
             transform.append(float(splitPack[idx]))
@@ -682,7 +682,7 @@ class Calibration:
         capImages = self._intNumImages
         while True and capImages:
             self._camRef.get_frame()
-            frameCopy = self._camRef.current_frame()
+            frameCopy = self._camRef.current_frame()[0]
             cv2.imshow('Target Calibration', frameCopy)
             userIn = cv2.waitKey(50)
             if userIn & 0xFF == ord('c'):
@@ -745,7 +745,7 @@ class Calibration:
                 break
 
         # Calibrate Sides wrt North face
-        greyFrame = self._camRef.current_frame()
+        greyFrame = self._camRef.current_frame()[0]
         greyFrame = cv2.cvtColor(greyFrame, cv2.COLOR_BGR2GRAY)
         cv2.putText(greyFrame, 'Performing target calibration...', (10, greyFrame.shape[0] - 10),
                     cv2.FONT_HERSHEY_PLAIN, 2, (255, 255, 255), 2)
@@ -1214,7 +1214,7 @@ class Calibration:
 
     # Return pose (R, t, objErr) from input 3xn object points and 2xn image points
     def _solve_rpp(self, objPoints, imgPoints):
-        imgPointsUndistorted = cv2.undistortPoints(imgPoints, self._camMatrix, self._distCoefs)
+        imgPointsUndistorted = cv2.undistortPoints(imgPoints, self.camMatrix, self.distCoefs)
         imgPointsUndistorted = np.hstack(
             (imgPointsUndistorted[:, 0, 0].reshape((-1, 1)), imgPointsUndistorted[:, 0, 1].reshape((-1, 1)))).T
         return rpp(objPoints.copy(), imgPointsUndistorted)

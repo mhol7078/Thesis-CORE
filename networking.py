@@ -7,10 +7,12 @@ import time
 
 __author__ = 'Michael Holmes'
 
-# ---------------------------------------------------------------------
-#               GLOBALS
-# ---------------------------------------------------------------------
-netEventDict = {'calibSync': threading.Event(), 'recDataSync': threading.Event()}
+
+# ----------------------------------------------------------------
+#
+# Class to handle all inter-node networking
+#
+# ----------------------------------------------------------------
 
 
 # Class to hold various protocol strings, identifiers, format etc.
@@ -18,10 +20,15 @@ class NetProto:
     def __init__(self):
         self._sockTimeout = 0.01
         self._recBuffSize = 1024
-        self.commMsgPrefixes = {'Calibrate': 'C', 'Success': 'S', 'Position': 'P', 'Time': 'T', 'ForceTime': 'F',
-                                'NoCalibrate': 'N'}
+        self.commMsgPrefixes = {'Calibrate': 'C', 'Success': 'S', 'Position': 'P', 'Time': 'T', 'ForceTime': 'U',
+                                'NoCalibrate': 'N', 'Failure': 'F', 'Capture': 'D', 'Reconstruct': 'R'}
         self.broadMsgPrefixes = {'Connect': 'C', 'Disconnect': 'D', 'Shutdown': 'S'}
-
+        self.netEventDict = {'calibSync': threading.Event(),
+                             'recDataSync': threading.Event(),
+                             'doCalib': threading.Event(),
+                             'capture': threading.Event(),
+                             'reconstruct': threading.Event(),
+                             'reconSync': threading.Event()}
 
 # Base class for Master and Slave Nodes/ Worker Threads, handles low level socket actions
 class NetBase(threading.Thread, NetProto):
@@ -45,7 +52,6 @@ class NetBase(threading.Thread, NetProto):
         self._socksOpen = False
         self._recOverflow = []
         self._connect_socks()
-        self.netEventDict = netEventDict
         return
 
     def _connect_socks(self):
@@ -94,7 +100,7 @@ class NetBase(threading.Thread, NetProto):
         elif socketType == 'broad':
             readableSocks, writeableSocks, errorSocks = select.select([self._broadSock],
                                                                       [self._broadSock], [],
-                                                                  self._sockTimeout)
+                                                                      self._sockTimeout)
         else:
             readableSocks, writeableSocks, errorSocks = select.select([self._commSock, self._broadSock],
                                                                       [self._commSock, self._broadSock], [],
@@ -228,7 +234,6 @@ class MasterNode(NetBase):
         self._dataSync = False
         self._newSlaveData = None
         self.slaveSyncTimes = None
-        self._timeOffsets = None
         self.setDaemon(True)
         self.start()
         return
@@ -249,7 +254,7 @@ class MasterNode(NetBase):
         while not self._killThread:
             if self._timeSync:
                 self._timeSync = False
-                self._timeOffsets = self._sync_time()
+                self._sync_time()
             if self._dataSync:
                 self._dataSync = False
                 if not self._recQueue.empty():
@@ -272,6 +277,12 @@ class MasterNode(NetBase):
             return addr, prefix, data
         else:
             return None
+
+    def _flush_rec_queue(self):
+        while not self._recQueue.empty():
+            self._recQueue.get()
+            self._recQueue.task_done()
+        return True
 
     def _connect_to_slaves(self):
         self._commSock.listen(5)
@@ -333,6 +344,9 @@ class MasterNode(NetBase):
         for clientAddr in self._clients.keys():
             self._clients[clientAddr].sendQueue.put((prefixKey, data))
 
+    def send_comms(self, addr, prefixKey, data=None):
+        self._clients[addr].sendQueue.put((prefixKey, data))
+
     def _sync_time(self, forced=False):
         slaveTimes = {}
         sendTime = time.time()
@@ -345,17 +359,17 @@ class MasterNode(NetBase):
         currTime = sendTime
         # Wait for responses from slave nodes
         while currTime - sendTime < self.msgTimeout and len(slaveTimes) != len(self._clients):
-            if self._recQueue.empty():
-                threadID, prefix, slaveTime = self._recQueue.get()
-                addr, port = self._threadReg[threadID]
-                slaveTimes[addr] = float(slaveTime) - sendTime
+            if not self._recQueue.empty():
+                slavePacket = self._recQueue.get()
                 self._recQueue.task_done()
+                if slavePacket is not None and slavePacket[1] == self.commMsgPrefixes['Time']:
+                    addr, prefix, slaveTime = slavePacket
+                    addr = self._threadReg[addr][0]
+                    slaveTimes[addr] = float(slaveTime) - sendTime
             currTime = time.time()
         ret = self._check_time_returns(slaveTimes)
         # Flush data queue
-        while not self._recQueue.empty():
-            self._recQueue.get()
-            self._recQueue.task_done()
+        self._flush_rec_queue()
         if ret:
             print 'Synchronised time with all nodes.'
             self.slaveSyncTimes = slaveTimes
@@ -389,7 +403,7 @@ class MasterThread(NetBase):
         self._commSock = conn
         self._socksOpen = True
         self._nodeType = 'Master'
-        self._name = addr
+        self.name = addr
         self._recOverflow = []
         self.sendQueue = Queue.Queue()
         self._recQueue = recQueue
@@ -420,6 +434,9 @@ class MasterThread(NetBase):
                     self._recQueue.put((self._threadID, dataIn[0], None))
                 else:
                     self._recQueue.put((self._threadID, dataIn[0], dataIn[4:4 + msgLen]))
+        self._check_socks('comm')
+        if self._commReadable:
+            self._close_socks()
         return True
 
 
@@ -433,7 +450,6 @@ class SlaveNode(NetBase):
         self._slaved = False
         self._timeSynced = False
         self.sendQueue = Queue.Queue()
-        self.calibFlag = None
         self.setDaemon(True)
         self.start()
         return
@@ -451,6 +467,7 @@ class SlaveNode(NetBase):
                 if not ret:
                     return False
                 self.sendQueue.task_done()
+
             # Respond to commands from Master
             self._check_socks('comm')
             if self._commReadable:
@@ -474,15 +491,32 @@ class SlaveNode(NetBase):
                     self._timeSynced = True
                     self.netEventDict['calibSync'].set()
                 elif dataIn[0] == self.commMsgPrefixes['Calibrate']:
-                    self.calibFlag = True
+                    self.netEventDict['doCalib'].set()
                     self.netEventDict['calibSync'].set()
                     print "Received 'Calibrate' instruction."
                 elif dataIn[0] == self.commMsgPrefixes['NoCalibrate']:
                     print "Received 'NoCalibrate' instruction."
-                    self.calibFlag = False
+                    self.netEventDict['doCalib'].clear()
                     self.netEventDict['calibSync'].set()
                 elif dataIn[0] == self.commMsgPrefixes['Success']:
                     self.netEventDict['calibSync'].set()
+                elif dataIn[0] == self.commMsgPrefixes['Capture']:
+                    if self.netEventDict['capture'].isSet():
+                        self.netEventDict['capture'].clear()
+                        print 'Capture off.'
+                    else:
+                        self.netEventDict['capture'].set()
+                        print 'Capture on.'
+                elif dataIn[0] == self.commMsgPrefixes['Reconstruct']:
+                    self.netEventDict['capture'].clear()
+                    if self.netEventDict['reconstruct'].isSet():
+                        print 'Master finished reconstruction.'
+                        self.netEventDict['reconstruct'].clear()
+                    else:
+                        print 'Master reconstructing.'
+                        self.netEventDict['reconstruct'].set()
+                        self.netEventDict['reconSync'].set()
+
             self._check_socks('broad')
             if self._broadReadable:
                 dataIn, inAddr = self._rec_data('broad')
@@ -500,6 +534,11 @@ class SlaveNode(NetBase):
                     print 'Received shutdown request.'
                     self._disconnect_from_master()
                     self._killThread = True
+        self._disconnect_from_master()
+        return True
+
+    def send_comms(self, prefixKey, data=None):
+        self.sendQueue.put((prefixKey, data))
         return True
 
     def _sync_to_master(self):
@@ -539,7 +578,8 @@ class SlaveNode(NetBase):
         return True
 
     def _disconnect_from_master(self):
-        self._slaved = False
-        self._close_socks()
-        print 'Disconnected from master.'
+        if self._slaved:
+            self._slaved = False
+            self._close_socks()
+            print 'Disconnected from master.'
         return True

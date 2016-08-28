@@ -1,11 +1,50 @@
 import cv2
 import numpy as np
 
-# Initialise Kalman Filter/Sparse Optical Flow settings
+__author__ = 'Michael Holmes'
+
+# ----------------------------------------------------------------
+#
+# Configuration file for the system
+#
+# ----------------------------------------------------------------
+
+# Configuration Filenames
+masterConfigFiles = dict(commonFilename='commonCalib.cfg',
+                         intrinFilename='intrinCalib1.cfg',
+                         extrinFilename='extrinCalib.cfg',
+                         targetFilename='targetCalib.cfg')
+
+slaveConfigFiles = dict(commonFilename='commonCalib.cfg',
+                        intrinFilename='intrinCalib2.cfg')
+
+# Local Tracking Parameters
+trackingParams = dict(numTargets=1,
+                      maxFailedCycles=5,
+                      deadZone=20,
+                      shiftMulti=2)
+
+# Network Parameters
+netParams = dict(nodeType='Master',
+                 numSlaves=1,
+                 port=42681,
+                 bcAddr='192.168.1.255',
+                 bcReattempts=5,
+                 msgTimeout=10,
+                 waitTimeout=600)
+
+# Camera Parameters
+camParams = dict(camIndex=1,
+                 capHeight=480,
+                 capWidth=640,
+                 capFrameRate=25.0,
+                 capCodec='XVID')
+
+# Kalman Filter / Sparse Optical Flow Parameters
 kalmanParams = dict(initState=np.zeros((6, 1)),
                     initControl=np.zeros((1, 1)),
                     initP=np.spacing(1) * np.eye(6),
-                    posSTD=12.0,
+                    posSTD=12.0,  # pos 12, vel 10, accel 1.5, range 6
                     velSTD=10.0,
                     accelSTD=1.5,
                     rangeSTD=6.0,
@@ -22,10 +61,13 @@ featureParams = dict(maxCorners=500,
                      minDistance=7,
                      blockSize=7)
 
+# Colour Segmentation Parameters
 colourParams = dict(hueWindow=10,
-                    satWindow=10,
-                    kernelSize=5)
+                    satWindow=20,
+                    kernelSize=5,
+                    colourTargetRadius=5)
 
+# Initialise Calibration Parameters
 calibCommonParams = dict(refineWindow=(5, 5),
                          numIter=30,
                          epsIter=0.1)
@@ -44,7 +86,7 @@ calibExtParams = dict(extPatternType='Square',
                       gridOffset=0.21,
                       nestMin=4,
                       objErrTol=2.0,
-                      extCalTime=1.5,
+                      extCalTime=0.5,
                       extCapInterval=0.05,
                       markerSides=dict(N=(6, 1),
                                        S=(5, 2),
@@ -52,16 +94,3 @@ calibExtParams = dict(extPatternType='Square',
                                        W=(7, 0)),
                       extrinTransforms=dict())
 
-netParams = dict(nodeType='Master',
-                 numSlaves=1,
-                 port=42681,
-                 bcAddr='192.168.1.255',
-                 bcReattempts=5,
-                 msgTimeout=10,
-                 waitTimeout=600)
-
-miscParams = dict(camIndex=1,
-                  capHeight=480,
-                  capWidth=640,
-                  capFrameRate=25.0,
-                  capCodec='XVID')

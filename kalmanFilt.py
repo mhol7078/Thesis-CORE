@@ -3,11 +3,11 @@ import numpy as np
 __author__ = 'Michael Holmes'
 
 
-##----------------------------------------------------------------##
+# ----------------------------------------------------------------
 #
 # Class to specifically handle model-less 2 dimensional tracking
 #
-##----------------------------------------------------------------##
+# ----------------------------------------------------------------
 
 class KalmanTrack:
     def __init__(self, initState, initControl, initP, posSTD, velSTD, accelSTD, rangeSTD, predictStep, updateStep):
@@ -21,7 +21,7 @@ class KalmanTrack:
         self._updateStep = updateStep  # Update rate in seconds for update stage
         self.timeSincePredict = 0  # Time since last predict run in seconds
         self.timeSinceUpdate = 0  # Time since last update run in seconds
-        self._maxUV = (0, 0)  # Max bounds on pixel position
+        self.maxUV = (0, 0)  # Max bounds on pixel position
 
     def predict(self):
         # Update state prediction
@@ -88,12 +88,12 @@ class KalmanTrack:
     def _constrain_position(self, state):
         if state[0] < 0:
             state[0] = 0
-        if state[0] > self._maxUV[0]:
-            state[0] = self._maxUV[0]
+        if state[0] > self.maxUV[0]:
+            state[0] = self.maxUV[0]
         if state[1] < 0:
             state[1] = 0
-        if state[1] > self._maxUV[1]:
-            state[1] = self._maxUV[1]
+        if state[1] > self.maxUV[1]:
+            state[1] = self.maxUV[1]
         return state
 
     def update_elapsed_counters(self, deltaTime):

@@ -12,11 +12,17 @@ __author__ = 'Michael Holmes'
 # Configuration Filenames
 masterConfigFiles = dict(commonFilename='commonCalib.cfg',
                          intrinFilename='intrinCalib1.cfg',
-                         extrinFilename='extrinCalib.cfg',
+                         extrinFilename='extrinCalib3Node.cfg',
                          targetFilename='targetCalib.cfg')
 
 slaveConfigFiles = dict(commonFilename='commonCalib.cfg',
-                        intrinFilename='intrinCalib2.cfg')
+                        intrinFilename='intrinCalib3.cfg')
+
+# Miscellaneous Parameters
+mainParams = dict(intrinCalibOnly=0,
+                  noNetwork=1,
+                  viewLocalTargets=0,
+                  maxRayDist=15000)
 
 # Local Tracking Parameters
 trackingParams = dict(numTargets=1,
@@ -26,7 +32,7 @@ trackingParams = dict(numTargets=1,
 
 # Network Parameters
 netParams = dict(nodeType='Master',
-                 numSlaves=1,
+                 numSlaves=2,
                  port=42681,
                  bcAddr='192.168.1.255',
                  bcReattempts=5,
@@ -86,8 +92,8 @@ calibExtParams = dict(extPatternType='Square',
                       gridOffset=0.21,
                       nestMin=4,
                       objErrTol=2.0,
-                      extCalTime=0.5,
-                      extCapInterval=0.05,
+                      extCalTime=1.5,
+                      extCapInterval=0.1,
                       markerSides=dict(N=(6, 1),
                                        S=(5, 2),
                                        E=(4, 3),

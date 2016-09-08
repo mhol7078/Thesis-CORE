@@ -45,7 +45,7 @@ def onMouse(event, x, y, flags, param):
 
 class Calibration:
     def __init__(self, camRef, netRef, commonFilename=None, intrinFilename=None, extrinFilename=None,
-                 targetFilename=None, noExtrin=False):
+                 targetFilename=None, noNetwork=False):
         self._camRef = camRef
         self._netRef = netRef
         self._intPatternType = None
@@ -75,6 +75,8 @@ class Calibration:
         self._markerSides = None
         # Transformation matrices of each Slave to Master
         self.extrinTransforms = None
+        # Plane definitions of each slave camera plane wrt Master node:[Point, Normal]
+        self.extrinPlanes = None
 
         # Load common calibration parameters
         if commonFilename is not None and os.path.isfile(commonFilename):
@@ -121,25 +123,42 @@ class Calibration:
                 print 'Cannot continue without intrinsic calibration.'
                 exit()
 
-        # TODO: Quick exit for not dealing with extrinsic calibration in main program/networking requirements.
-        if noExtrin:
-            self._members_from_params('extrin', **cEP)
-            if targetFilename is not None and os.path.isfile(targetFilename):
-                if self._read_target_from_file(targetFilename):
-                    print 'Loaded calibration target file.'
-                else:
-                    print 'Failed to load calibration target file.'
+        # Quick exit for not dealing with extrinsic calibration network in main program/networking requirements.
+        if noNetwork and extrinFilename is not None and os.path.isfile(extrinFilename):
+            ret, calibExtParams = self._read_extrin_from_file(extrinFilename)
+            if ret:
+                self._members_from_params('extrin', **calibExtParams)
+                # Generate camera bounding planes from poses
+                self._planes_from_poses()
+                print 'Loaded extrinsic calbration from %s.' % extrinFilename
+            else:
+                print 'Failed to load extrinsic calibration from file. Please remove %s to recalibrate camera.' % \
+                      extrinFilename
+                exit()
             print 'Finished non-networked calibration quick load.'
             return
 
+        elif noNetwork and targetFilename is not None and os.path.isfile(targetFilename):  # Calibration test quickload
+            self._members_from_params('extrin', **cEP)
+            ret = self._read_target_from_file(targetFilename)
+            if ret:
+                print 'Loaded calibration target from %s' % targetFilename
+                print 'Finished non-networked calibration quick load.'
+                return
+            else:
+                print 'Unable to load target calibration from file. ' \
+                      'Please remove %s to re-calibrate target.' % targetFilename
+                exit()
+
         # Load extrinsics
         # Load from file
-        if self._netRef.name == 'Master' and extrinFilename is not None and os.path.isfile(extrinFilename):
+        elif self._netRef.name == 'Master' and extrinFilename is not None and os.path.isfile(extrinFilename):
             # Load extrinsic calibration data and tell slaves no extrinsic calibration is required.
             ret, calibExtParams = self._read_extrin_from_file(extrinFilename)
             if ret:
                 self._netRef.send_comms_all('NoCalibrate')
                 self._members_from_params('extrin', **calibExtParams)
+                self._planes_from_poses()  # Generate bounding camera planes
                 print 'Loaded extrinsic calbration from %s.' % extrinFilename
             else:
                 print 'Failed to load extrinsic calibration from file. Please remove %s to recalibrate camera.' % \
@@ -185,6 +204,7 @@ class Calibration:
                 ret = self._calibrate_ext_master()
                 # If successful, save calibration and alert slave nodes to continue
                 if ret:
+                    self._planes_from_poses()  # Load camera bounding planes
                     self._write_extrin_to_file('extrinCalib.cfg')
                     self._netRef.send_comms_all('Success')
             else:
@@ -536,10 +556,13 @@ class Calibration:
         extrinData = slaveData.copy()
         extrinData['localhost'] = localTargets
         del slaveData, localTargets
+
+        # TODO: Temp saver for debugging
         # saveData = shelve.open('extrinData')
         # saveData['extrinData'] = extrinData
         # saveData.close()
         # return False
+
         # Determine optimal calibration sequence by identifying pairs of nodes, from Master out
         ret = self._extrin_calibration(extrinData, 0.1)
         # Return transforms wrt Master.
@@ -668,7 +691,7 @@ class Calibration:
 
     def _depackage_extrin_data(self, packet):
         splitPack = packet.split(':')
-        side = (splitPack[0], bool(splitPack[1]))
+        side = (splitPack[0], bool(int(splitPack[1])))
         transform = []
         for idx in range(2, 18):
             transform.append(float(splitPack[idx]))
@@ -1426,6 +1449,18 @@ class Calibration:
                 nodeLevel += 1
         return nodeLevel
 
+    def _planes_from_poses(self):
+        planeDef = np.zeros((4, 2))
+        planeDef[2, 1] = 1
+        planeDef[3, :] = np.ones((1, 2))
+        planes = {'localhost': planeDef[:3, :].reshape((3, 2))}
+        for key, (transform, weighting) in self.extrinTransforms.iteritems():
+            transPlane = np.dot(transform, planeDef)
+            transPlane[:3, 1:] = (transPlane[:3, 1] - transPlane[:3, 0]).reshape((3, 1))
+            planes[key] = transPlane[:3, :].reshape((3, 2))
+        self.extrinPlanes = planes
+        return
+
 
 def mad_based_outlier(points, thresh=3.5):
     if len(points.shape) == 1:
@@ -1439,21 +1474,19 @@ def mad_based_outlier(points, thresh=3.5):
 
 
 if __name__ == '__main__':
-    from camOps import CamHandler
-
-    cam = CamHandler(0)
-    net = None
-    calib = Calibration(cam, net, commonFilename='commonCalib.cfg', intrinFilename='intrinCalib1.cfg',
-                        targetFilename='targetCalib.cfg', noExtrin=True)
+    calib = Calibration(None, None, commonFilename='commonCalib.cfg', intrinFilename='intrinCalib1.cfg',
+                        targetFilename='targetCalib.cfg', noNetwork=True)
 
     # ret = calib._calibrate_target()
     # if ret:
     #     calib._write_target_to_file('targetCalib.cfg')
 
-    # savedData = shelve.open('extrinData')
-    # extrinData = savedData['extrinData']
-    # savedData.close()
-    # ret = calib._extrin_calibration(extrinData, 0.1)
+    savedData = shelve.open('extrinData')
+    extrinData = savedData['extrinData']
+    savedData.close()
+    ret = calib._extrin_calibration(extrinData, 0.1)
+    if ret:
+        calib._write_extrin_to_file('extrinCalib.cfg')
     # calib._write_extrin_to_file('extrinCalib.cfg')
     # ret, params = calib._read_extrin_from_file('extrinCalib.cfg')
     # calib._members_from_params('extrin', **params)

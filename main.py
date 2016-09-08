@@ -1,6 +1,6 @@
 import cv2
 from reconstruction import Reconstruction
-from HSConfig import netParams
+from HSConfig import netParams, mainParams
 
 __author__ = 'Michael Holmes'
 
@@ -9,11 +9,16 @@ __author__ = 'Michael Holmes'
 #               MAIN FUNCTION BLOCK
 # ---------------------------------------------------------------------
 def main():
+
     # Initialise system
     if netParams['nodeType'] == 'Master':
         Reconstructor = Reconstruction('Master')
     else:
         Reconstructor = Reconstruction('Slave')
+
+    # Shutdown if only intrinsic calibration was required
+    if mainParams['intrinCalibOnly']:
+        return True
 
     # User interface loop
     while True:

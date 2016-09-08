@@ -116,16 +116,16 @@ class LocalModeOne(KalmanTrack, threading.Thread):
 
             # Push latest filter estimate to image window along with new image
             # if __debug__:
-            currEstimate = self.observe_model()
-            currEstimate = (currEstimate[0], currEstimate[1])
-            frameCopy = currFrame.copy()
-            if self.targetLocked:  # Green circle
-                circColour = (0, 255, 0)
-            else:  # Red circle
-                circColour = (0, 0, 255)
-            cv2.circle(frameCopy, currEstimate, self._colourTargetRadius, circColour)
-            titleString = 'Target %d' % self._targetNumber
-            cv2.imshow(titleString, frameCopy)
+                    #     currEstimate = self.observe_model()
+                    #     currEstimate = (currEstimate[0], currEstimate[1])
+                    #     frameCopy = currFrame.copy()
+                    #     if self.targetLocked:  # Green circle
+                    #         circColour = (0, 255, 0)
+                    #     else:  # Red circle
+                    #         circColour = (0, 0, 255)
+                    #     cv2.circle(frameCopy, currEstimate, self._colourTargetRadius, circColour)
+                    #     titleString = 'Target %d' % self._targetNumber
+                    #     cv2.imshow(titleString, frameCopy)
 
         return
 

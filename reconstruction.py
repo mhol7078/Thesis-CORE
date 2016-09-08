@@ -8,7 +8,8 @@ from camOps import CamHandler
 from networking import MasterNode, SlaveNode
 from calibration import Calibration
 from localTracking import LocalModeOne
-from HSConfig import camParams, netParams, trackingParams, masterConfigFiles as mCF, slaveConfigFiles as sCF
+from HSConfig import camParams, netParams, trackingParams, masterConfigFiles as mCF, slaveConfigFiles as sCF, mainParams
+# from visualise import Visualiser
 import shelve
 
 __author__ = 'Michael Holmes'
@@ -23,13 +24,12 @@ __author__ = 'Michael Holmes'
 # Uses localTracking.py for local frame tracking
 # Uses camOps.py for camera handling
 #
-# TODO: Integrate matplotlib 3D plotter
 # TODO: Test n>=4 nodes
 # ----------------------------------------------------------------
 
 
 class Reconstruction(threading.Thread):
-    def __init__(self, nodeType):
+    def __init__(self, nodeType, noNetwork=False):
         # Initialise own thread
         threading.Thread.__init__(self)
 
@@ -40,11 +40,27 @@ class Reconstruction(threading.Thread):
         # Reconstruction Params
         self.name = nodeType
         self.posList = []
+        self.rayMax = mainParams['maxRayDist']  # Maximum viewing range for each camera
+
+        # Run no-network calibration load
+        if noNetwork and nodeType == 'Master':
+            self._calib = Calibration(None, None, noNetwork=True, **mCF)
+            return
 
         # Initialise local camera thread
         print 'Initialising camera link.'
         self._cam = CamHandler(camParams['camIndex'])
         print 'Camera link up.'
+
+        # Run intrinsic calibration only
+        if mainParams['intrinCalibOnly']:
+            print 'Running forced intrinsic calibration.'
+            self._calib = Calibration(self._cam, None, noNetwork=True)
+            # Close camera
+            self._cam.stop()
+            return
+
+        # Otherwise normal operation
 
         # Initialise Network
         print 'Initialising network links.'
@@ -92,10 +108,12 @@ class Reconstruction(threading.Thread):
                 # If recon flag reconstruct from collected tracking data
                 if self._net.netEventDict['reconstruct'].isSet():
                     compiledData = self._master_compile_data()
-                    savedData = shelve.open('reconData')
-                    savedData['reconData'] = compiledData
-                    savedData.close()
+                    # savedData = shelve.open('reconData')
+                    # savedData['reconData'] = compiledData
+                    # savedData.close()
+                    posData = self._master_reconstruct(compiledData, 0.1)
                     self.toggle_reconstruct()
+                    pass
         else:  # Slave loop
             while not self._killThread:
                 # If capture flag start transmitting positions
@@ -106,8 +124,6 @@ class Reconstruction(threading.Thread):
                     self._net.netEventDict['reconSync'].clear()
 
         return
-
-    # TODO: PLACE FOR RECONSTRUCT
 
     def _master_compile_data(self):
         # Collect remaining slave data in queue
@@ -227,6 +243,8 @@ class Reconstruction(threading.Thread):
             pass
         # Kill any remaining OpenCV windows
         cv2.destroyAllWindows()
+        # End own thread
+        self._killThread = True
         return True
 
     # Toggle capture mode on or off if master, slaves will follow upon comm send
@@ -266,144 +284,215 @@ class Reconstruction(threading.Thread):
             print 'No capture data to purge.'
             return False
 
-
-# Reconstruct 3D path of targets using compiled 3D vector data and nominated time window 'binSize'
-def master_reconstruct(compiledData, binSize):
-    # Isolate timing data
-    binSizeCopy = binSize
-    timingData = []
-    for idx, targNum, addr, capTime, lineVect, localWeight, extrinWeight in compiledData:
-        timingData.append((idx, targNum, addr, capTime))
-    # Normalise times
-    timingData = np.array(timingData, dtype=[('idx', 'i8'), ('targNum', 'i8'), ('addr', 'S16'), ('time', 'f8')])
-    timingData.sort(order='time')
-    sortedTime = timingData['time']
-    sortedTime -= sortedTime.min() * np.ones_like(sortedTime)
-    binSizeCopy = binSizeCopy / (sortedTime.max() - sortedTime.min())
-    sortedTime /= (sortedTime.max() - sortedTime.min()) * np.ones_like(sortedTime)
-    # Group according observation window
-    obsGroups = []
-    idx = 0
-    lastGroupMaxIdx = 0
-    while idx < len(sortedTime):
-        idxOffset = 1
-        newObGroup = [timingData['idx'][idx]]
-        newObGroupAddr = [timingData['addr'][idx]]
-        newObGroupTiming = [sortedTime[idx]]
-        while idx + idxOffset < len(sortedTime) and sortedTime[idx + idxOffset] - sortedTime[idx] < binSizeCopy:
-            if timingData['targNum'][idx] == timingData['targNum'][idx + idxOffset]:
-                newObGroup.append(timingData['idx'][idx + idxOffset])
-                newObGroupAddr.append(timingData['addr'][idx + idxOffset])
-                newObGroupTiming.append(sortedTime[idx + idxOffset])
-            idxOffset += 1
-        # If new group is not a subset of a previous group add to observation groups
-        newObGroupAddr = set(newObGroupAddr)
-        if idx + idxOffset > lastGroupMaxIdx and len(newObGroup) > 1 and len(newObGroupAddr) > 1:
-            # Compute timing weightings
-            groupTimeMean = np.mean(newObGroupTiming)
-            for idx2 in range(len(newObGroupTiming)):
-                newObGroupTiming[idx2] = 1.0 - np.fabs(newObGroupTiming[idx2] - groupTimeMean) / binSizeCopy
-            # Append to group
-            obsGroups.append((newObGroup, newObGroupTiming))
-            lastGroupMaxIdx = idx + idxOffset
-        idx += 1
-    # Collapse node-multiples in groups according to weightings
-    reconstructedPoints = []
-    for obsGroup in obsGroups:
-        addrSets = {}
-        for idx, timeWeight in zip(obsGroup[0], obsGroup[1]):
-            idxSet = compiledData[idx]
-            if idxSet[2] not in addrSets:
-                addrSets[idxSet[2]] = [(idxSet, timeWeight)]
-            else:
-                addrSets[idxSet[2]].append((idxSet, timeWeight))
-        # Compute combined weight and collapse if multiples
-        refinedObsGroup = []
-        for addr, addrSet in addrSets.iteritems():
-            # Compute weight score/s from localWeight, extrinWeight, timingWeight and collate vectors/times
-            # if more than one
-            weightScores = []
+    # Reconstruct 3D path of targets using compiled 3D vector data and nominated time window 'binSize'
+    def _master_reconstruct(self, compiledData, binSize):
+        # Isolate timing data
+        binSizeCopy = binSize
+        timingData = []
+        for idx, targNum, addr, capTime, lineVect, localWeight, extrinWeight in compiledData:
+            timingData.append((idx, targNum, addr, capTime))
+        # Normalise times
+        timingData = np.array(timingData, dtype=[('idx', 'i8'), ('targNum', 'i8'), ('addr', 'S16'), ('time', 'f8')])
+        timingData.sort(order='time')
+        sortedTime = timingData['time']
+        sortedTime -= sortedTime.min() * np.ones_like(sortedTime)
+        binSizeCopy = binSizeCopy / (sortedTime.max() - sortedTime.min())
+        sortedTime /= (sortedTime.max() - sortedTime.min()) * np.ones_like(sortedTime)
+        # Group according observation window
+        obsGroups = []
+        idx = 0
+        lastGroupMaxIdx = 0
+        while idx < len(sortedTime):
+            idxOffset = 1
+            newObGroup = [timingData['idx'][idx]]
+            newObGroupAddr = [timingData['addr'][idx]]
+            newObGroupTiming = [sortedTime[idx]]
+            while idx + idxOffset < len(sortedTime) and sortedTime[idx + idxOffset] - sortedTime[idx] < binSizeCopy:
+                if timingData['targNum'][idx] == timingData['targNum'][idx + idxOffset]:
+                    newObGroup.append(timingData['idx'][idx + idxOffset])
+                    newObGroupAddr.append(timingData['addr'][idx + idxOffset])
+                    newObGroupTiming.append(sortedTime[idx + idxOffset])
+                idxOffset += 1
+            # If new group is not a subset of a previous group add to observation groups
+            newObGroupAddr = set(newObGroupAddr)
+            if idx + idxOffset > lastGroupMaxIdx and len(newObGroup) > 1 and len(newObGroupAddr) > 1:
+                # Compute timing weightings
+                groupTimeMean = np.mean(newObGroupTiming)
+                for idx2 in range(len(newObGroupTiming)):
+                    newObGroupTiming[idx2] = 1.0 - np.fabs(newObGroupTiming[idx2] - groupTimeMean) / binSizeCopy
+                # Append to group
+                obsGroups.append((newObGroup, newObGroupTiming))
+                lastGroupMaxIdx = idx + idxOffset
+            idx += 1
+        # Collapse node-multiples in groups according to weightings
+        reconstructedPoints = []
+        for obsGroup in obsGroups:
+            addrSets = {}
+            for idx, timeWeight in zip(obsGroup[0], obsGroup[1]):
+                idxSet = compiledData[idx]
+                if idxSet[2] not in addrSets:
+                    addrSets[idxSet[2]] = [(idxSet, timeWeight)]
+                else:
+                    addrSets[idxSet[2]].append((idxSet, timeWeight))
+            # Compute combined weight and collapse if multiples
+            refinedObsGroup = []
+            for addr, addrSet in addrSets.iteritems():
+                # Compute weight score/s from localWeight, extrinWeight, timingWeight and collate vectors/times
+                # if more than one
+                weightScores = []
+                capTimes = []
+                vectors = np.zeros((3, 1))
+                for idxSet, timeWeight in addrSet:
+                    weightScores.append(np.average([idxSet[5], idxSet[6], timeWeight], weights=[0.5, 0.3, 0.2]))
+                    capTimes.append(idxSet[3])
+                    vectors = np.hstack((vectors, idxSet[4][:, 1].reshape((3, 1))))
+                # Collapse lineVect according to weight score and assign weight
+                vector = np.average(vectors[:, 1:].reshape((3, -1)), axis=1, weights=weightScores).reshape((3, 1))
+                avgCapTime = np.average(capTimes, weights=weightScores)
+                lineVect = np.hstack((idxSet[4][:, 0].reshape((3, 1)), vector))
+                weighting = np.mean(weightScores)
+                refinedObsGroup.append((idxSet[1], addr, avgCapTime, lineVect, weighting))
+            # For each observation group, compute a position/error estimate and time
+            groupEstimates = []
+            for idx1, idx2 in combinations(range(len(refinedObsGroup)), 2):
+                line1 = refinedObsGroup[idx1][3]
+                line2 = refinedObsGroup[idx2][3]
+                plane1 = self._calib.extrinPlanes[refinedObsGroup[idx1][1]]
+                plane2 = self._calib.extrinPlanes[refinedObsGroup[idx2][1]]
+                weighting1 = refinedObsGroup[idx1][4]
+                weighting2 = refinedObsGroup[idx2][4]
+                capTime1 = refinedObsGroup[idx1][2]
+                capTime2 = refinedObsGroup[idx2][2]
+                # pairPosEstimate = point_between_skew_lines(line1, line2, weighting1, weighting2)
+                pairPosEstimate = self._point_between_skew_rays(line1, line2, plane1, plane2, weighting1, weighting2)
+                if pairPosEstimate is not None:
+                    avgCapTime = np.average([capTime1, capTime2], weights=[weighting1, weighting2])
+                    avgWeight = np.mean([weighting1, weighting2])
+                    groupEstimates.append((pairPosEstimate, avgCapTime, avgWeight))
+            # Collapse multiple estimates per group
+            positions = np.zeros((3, 1))
             capTimes = []
-            vectors = np.zeros((3, 1))
-            for idxSet, timeWeight in addrSet:
-                weightScores.append(np.average([idxSet[5], idxSet[6], timeWeight], weights=[0.5, 0.3, 0.2]))
-                capTimes.append(idxSet[3])
-                vectors = np.hstack((vectors, idxSet[4][:, 1].reshape((3, 1))))
-            # Collapse lineVect according to weight score and assign weight
-            vector = np.average(vectors[:, 1:].reshape((3, -1)), axis=1, weights=weightScores).reshape((3, 1))
-            avgCapTime = np.average(capTimes, weights=weightScores)
-            lineVect = np.hstack((idxSet[4][:, 0].reshape((3, 1)), vector))
-            weighting = np.mean(weightScores)
-            refinedObsGroup.append((idxSet[1], addr, avgCapTime, lineVect, weighting))
-        # For each observation group, compute a position/error estimate and time
-        groupEstimates = []
-        for idx1, idx2 in combinations(range(len(refinedObsGroup)), 2):
-            line1 = refinedObsGroup[idx1][3]
-            line2 = refinedObsGroup[idx2][3]
-            weighting1 = refinedObsGroup[idx1][4]
-            weighting2 = refinedObsGroup[idx2][4]
-            capTime1 = refinedObsGroup[idx1][2]
-            capTime2 = refinedObsGroup[idx2][2]
-            pairPosEstimate = point_between_skew_lines(line1, line2, weighting1, weighting2)
-            if pairPosEstimate is not None:
-                avgCapTime = np.average([capTime1, capTime2], weights=[weighting1, weighting2])
-                avgWeight = np.mean([weighting1, weighting2])
-                groupEstimates.append((pairPosEstimate, avgCapTime, avgWeight))
-        # Collapse multiple estimates per group
-        positions = np.zeros((3, 1))
-        capTimes = []
-        weights = []
-        for estimate in groupEstimates:
-            positions = np.hstack((positions, estimate[0]))
-            capTimes.append(estimate[1])
-            weights.append(estimate[2])
-        avgPosition = np.average(positions[:, 1:].reshape((3, -1)), axis=1, weights=weights)
-        avgTime = np.average(capTimes, weights=weights)
-        # Append new observation position
-        reconstructedPoints.append((avgPosition, avgTime))
+            weights = []
+            for estimate in groupEstimates:
+                positions = np.hstack((positions, estimate[0]))
+                capTimes.append(estimate[1])
+                weights.append(estimate[2])
+            avgPosition = np.average(positions[:, 1:].reshape((3, -1)), axis=1, weights=weights)
+            avgTime = np.average(capTimes, weights=weights)
+            # Append new observation position
+            reconstructedPoints.append((refinedObsGroup[0][0], avgPosition, avgTime))
 
-    return reconstructedPoints
+        return reconstructedPoints
 
+    # Credit Dan Sunday, geomalgorithms.com
+    def _point_between_skew_rays(self, line1, line2, plane1, plane2, weighting1=None, weighting2=None):
+        eps = 1e-8
+        # Find intersection of lines and planes
+        line1Point2 = self._line_plane_intersect(line1, plane2)
+        line2Point2 = self._line_plane_intersect(line2, plane1)
+        # Return None if no valid segment endpoints
+        if line1Point2 is None or line2Point2 is None:
+            return None
+        line1Point1 = line1[:, 0].astype(np.float64)
+        line2Point1 = line2[:, 0].astype(np.float64)
 
-def point_between_skew_lines(line1, line2, weighting1=None, weighting2=None):
-    # Initialise components
-    point1 = line1[:, 0].astype(np.float64)
-    point2 = line2[:, 0].astype(np.float64)
-    vect1 = line1[:, 1].astype(np.float64)
-    vect2 = line2[:, 1].astype(np.float64)
-    w0 = point1 - point2
-    a = np.dot(vect1, vect1)
-    b = np.dot(vect1, vect2)
-    c = np.dot(vect2, vect2)
-    d = np.dot(vect1, w0)
-    e = np.dot(vect2, w0)
+        # Visualiser
+        # segment1 = np.hstack((line1Point1.reshape((3, 1)), line1Point2.reshape((3, 1))))
+        # segment2 = np.hstack((line2Point1.reshape((3, 1)), line2Point2.reshape((3, 1))))
+        # visualise_observation(segment1, segment2)
 
-    # Check for parallel lines
-    if (a * c - b ** 2) == 0:
-        return None
+        u = line1Point2 - line1Point1
+        v = line2Point2 - line2Point1
+        w = line1Point1 - line2Point1
+        a = np.dot(u, u)
+        b = np.dot(u, v)
+        c = np.dot(v, v)
+        d = np.dot(u, w)
+        e = np.dot(v, w)
+        D = a * c - b ** 2
+        sD = D
+        tD = D
 
-    # Calculate parameter values s,t along vectors
-    t = (b * e - c * d) / (a * c - b ** 2)
-    s = (a * e - b * d) / (a * c - b ** 2)
+        if D < eps:  # Lines are almost parallel
+            sN = 0.0
+            sD = 1.0
+            tN = e
+            tD = c
+        else:
+            sN = b * e - c * d
+            tN = a * e - b * d
+            if sN < 0.0:
+                sN = 0.0
+                tN = e
+                tD = c
+            elif sN > sD:
+                sN = sD
+                tN = e + b
+                tD = c
 
-    # Calculate bounding shortest distance line
-    close1 = point1 + t * vect1
-    close2 = point2 + s * vect2
+        if tN < 0.0:
+            tN = 0.0
+            if -d < 0.0:
+                sN = 0.0
+            elif -d > a:
+                sN = sD
+            else:
+                sN = -d
+                sD = a
+        elif tN > tD:
+            tN = tD
+            if b - d < 0.0:
+                sN = 0.0
+            elif b - d > a:
+                sN = sD
+            else:
+                sN = b - d
+                sD = a
 
-    # If no weighting is designated, take the midpoint
-    if weighting1 is None or weighting2 is None:
-        weighting = 0.5
-    else:
-        weighting = 1.0 - weighting1 / (weighting1 + weighting2)
+        # sc is line1 vector scalar, tc is line2
+        sc = 0.0 if np.abs(sN) < eps else sN / sD
+        tc = 0.0 if np.abs(tN) < eps else tN / tD
 
-    return (close1 + weighting * (close2 - close1)).reshape((3, 1))
+        # Closest points on each line
+        close1 = line1Point1 + sc * u
+        close2 = line2Point1 + tc * v
+
+        if weighting1 is None or weighting2 is None:
+            weighting = 0.5
+        else:
+            weighting = 1.0 - weighting1 / (weighting1 + weighting2)
+
+        return (close1 + weighting * (close2 - close1)).reshape((3, 1))
+
+    def _line_plane_intersect(self, line, plane):
+        eps = 1e-8
+        pointLine = line[:, 0].astype(np.float64)
+        pointPlane = plane[:, 0].astype(np.float64)
+        vectLine = line[:, 1].astype(np.float64)
+        normPlane = plane[:, 1].astype(np.float64)
+
+        w = pointLine - pointPlane
+        D = np.dot(normPlane, vectLine)
+        N = -np.dot(normPlane, w)
+        # Line is either in plane or parallel to it
+        if np.fabs(D) < eps:
+            return None
+        sI = N / D
+        if sI > 0.0:  # Return segment intersection with plane
+            return (pointLine + sI * vectLine)
+        else:  # Segment intersects behind camera, employ max range instead
+            sI = self.rayMax / np.linalg.norm(vectLine)
+            return (pointLine + sI * vectLine)
 
 
 if __name__ == '__main__':
     # Test script for the reconstruction module
-    savedData = shelve.open('reconData')
+    savedData = shelve.open('reconData3Node')
     compiledData = savedData['reconData']
     savedData.close()
-    reconPoints = master_reconstruct(compiledData, 0.1)
-    test = 1
+
+    # visualHdl = Visualiser()
+    reconHdl = Reconstruction('Master', noNetwork=True)
+    posData = reconHdl._master_reconstruct(compiledData, 0.1)
+
     pass

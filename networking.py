@@ -12,6 +12,7 @@ __author__ = 'Michael Holmes'
 #
 # Class to handle all inter-node networking
 #
+# TODO: Cleanup shutdown procedure
 # ----------------------------------------------------------------
 
 
@@ -85,10 +86,10 @@ class NetBase(threading.Thread, NetProto):
         self._killThread = True
         return True
 
-    def _close_socks(self):
+    def _close_socks(self, closeType='Shutdown'):
         self._socksOpen = False
         self._commSock.close()
-        if self._nodeType == 'Slave':
+        if self._nodeType == 'Slave' and closeType == 'Shutdown':
             self._broadSock.close()
         return True
 
@@ -145,7 +146,7 @@ class NetBase(threading.Thread, NetProto):
                 sent = self._broadSock.sendto(msg[totalSent:], (self._bcAddr, self._port))
             if sent == 0:
                 print 'Communications connection broken.'
-                self._close_socks()
+                self._close_socks('Disconnect')
                 self._socksOpen = False
                 return False
             totalSent += sent
@@ -168,7 +169,7 @@ class NetBase(threading.Thread, NetProto):
                 chunk, addr = self._broadSock.recvfrom(4)
             if chunk == '':
                 print 'Communications connection broken.'
-                self._close_socks()
+                self._close_socks('Disconnect')
                 self._socksOpen = False
                 return None
             chunks.append(chunk)
@@ -189,7 +190,7 @@ class NetBase(threading.Thread, NetProto):
                 chunk = self._broadSock.recv(numBytes - 4 - bytesRec)
             if chunk == '':
                 print 'Communications connection broken.'
-                self._close_socks()
+                self._close_socks('Disconnect')
                 self._socksOpen = False
                 return None
             chunks.append(chunk)
@@ -321,10 +322,10 @@ class MasterNode(NetBase):
             print 'Failed to connect to all slave nodes. Exiting.'
             return False
 
-    def _disconnect_from_slaves(self):
+    def _disconnect_from_slaves(self, closeType='Shutdown'):
         # Kill remaining worker threads then exit
-        self._send_data('broad', 'Disconnect')
-        self._close_socks()
+        self._send_data('broad', closeType)
+        self._close_socks(closeType)
         for addr in self._clients.keys():
             self._clients[addr].stop()
             while self._clients[addr].isAlive():
@@ -436,7 +437,7 @@ class MasterThread(NetBase):
                     self._recQueue.put((self._threadID, dataIn[0], dataIn[4:4 + msgLen]))
         self._check_socks('comm')
         if self._commReadable:
-            self._close_socks()
+            self._close_socks('Disconnect')
         return True
 
 
@@ -524,15 +525,17 @@ class SlaveNode(NetBase):
                     return False
                 elif dataIn[0] == self.broadMsgPrefixes['Connect']:
                     print 'Received connection request.'
-                    if self._slaved:
-                        self._disconnect_from_master()
-                    self._sync_to_master()
+                    if not self._slaved:
+                        print 'Re-syncing to Master'
+                        self._sync_to_master()
+                    else:
+                        print 'Already synced to Master'
                 elif dataIn[0] == self.broadMsgPrefixes['Disconnect']:
                     print 'Received disconnect request.'
-                    self._disconnect_from_master()
+                    self._disconnect_from_master('Disconnect')
                 elif dataIn[0] == self.broadMsgPrefixes['Shutdown']:
                     print 'Received shutdown request.'
-                    self._disconnect_from_master()
+                    self._disconnect_from_master('Shutdown')
                     self._killThread = True
         self._disconnect_from_master()
         return True
@@ -577,9 +580,11 @@ class SlaveNode(NetBase):
         self._slaved = True
         return True
 
-    def _disconnect_from_master(self):
+    def _disconnect_from_master(self, closeType='Shutdown'):
         if self._slaved:
             self._slaved = False
-            self._close_socks()
+            self._close_socks(closeType)
             print 'Disconnected from master.'
+        elif closeType != 'Shutdown':
+            print 'Already disconnected from master.'
         return True

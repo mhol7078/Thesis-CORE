@@ -1,5 +1,6 @@
 import cv2
 from reconstruction import Reconstruction
+import time
 from HSConfig import netParams, mainParams
 
 __author__ = 'Michael Holmes'
@@ -12,7 +13,7 @@ def main():
 
     # Initialise system
     if netParams['nodeType'] == 'Master':
-        Reconstructor = Reconstruction('Master')
+        Reconstructor = Reconstruction('Master', noNetwork=mainParams['noNetwork'])
     else:
         Reconstructor = Reconstruction('Slave')
 
@@ -20,8 +21,22 @@ def main():
     if mainParams['intrinCalibOnly']:
         return True
 
+    # Spawn Window For User Interface
+    cv2.namedWindow('UserWindow')
+
     # User interface loop
+    lastRefresh = time.time()
     while True:
+        # Check for Reconstructor shutdown (for slaves)
+        if not Reconstructor.isAlive():
+            break
+
+        # Post new update of locks
+        if time.time() - lastRefresh > 0.2:
+            currLocks = Reconstructor.collect_estimates()
+            cv2.imshow('UserWindow', currLocks)
+            lastRefresh = time.time()
+
         # Check for user input
         userIn = cv2.waitKey(1) & 0xFF
         if userIn == ord('q'):  # Shutdown system
@@ -38,3 +53,6 @@ def main():
 
 if __name__ == '__main__':
     main()
+    # Pig X:0,Y:310,Z:1000
+    # Small Cube: X:1000,Y:380,Z:2000
+    # Large Cube: X:0,Y:230,Z:3000

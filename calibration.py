@@ -25,9 +25,11 @@ __author__ = 'Michael Holmes'
 # Class to handle all intrinsic and extrinsic camera calibration
 # operations.
 #
-# TODO: Add multi-zonal support post-thesis
-# TODO: RPP node loadsharing, move to C++ wrap
+# TODO: Add calibration resolution to intrinCalib and rescale intrinsic matrix to designated resolution
 # TODO: Improve Extrinsic Angular sensitivity - Change extrinsic chessboard to more viewable pattern
+# TODO: Add override for static target flag in extrin_calibration -> set timeweight to max
+# TODO: Add multi-zonal support
+# TODO: RPP node loadsharing, move to C++ wrap
 # ----------------------------------------------------------------
 
 # ----------------------------------------------------------------
@@ -45,7 +47,7 @@ def onMouse(event, x, y, flags, param):
 
 class Calibration:
     def __init__(self, camRef, netRef, commonFilename=None, intrinFilename=None, extrinFilename=None,
-                 targetFilename=None, noNetwork=False):
+                 targetFilename=None, noNetwork=False, intrinOnly=False):
         self._camRef = camRef
         self._netRef = netRef
         self._intPatternType = None
@@ -67,6 +69,7 @@ class Calibration:
         self._objErrTol = None
         self.extCalTime = None
         self._extCapInterval = None
+        self._staticTarget = None
         # offsets list as a percentage of the length of the circular grid longest sides for each marker corner,
         # clockwise from top left
         self._markerOffsets = None
@@ -116,6 +119,8 @@ class Calibration:
                 if ret:
                     self._write_intrin_to_file('intrinCalib.cfg')
                     print 'Written intrinsic calibration file to <intrinCalib.cfg>.'
+                    if intrinOnly:
+                        return
                 else:
                     print 'Cannot continue without calibration.'
                     exit()
@@ -262,8 +267,8 @@ class Calibration:
     def _members_from_params(self, fileType, intPatternType=None, extPatternType=None, intPatternSize=None,
                              extPatternSize=None, intPatternDimension=None, extPatternDimension=None, intNumImages=None,
                              refineWindow=None, numIter=None, epsIter=None, camMatrix=None, distCoefs=None,
-                             nestMin=None, objErrTol=None, extCalTime=None, extCapInterval=None, markerOffsets=None,
-                             gridOffset=None, markerSides=None, extrinTransforms=None):
+                             nestMin=None, objErrTol=None, extCalTime=None, extCapInterval=None, staticTarget=None,
+                             markerOffsets=None, gridOffset=None, markerSides=None, extrinTransforms=None):
         if fileType == 'common':
             self._refineWindow = refineWindow
             self._numIter = numIter
@@ -284,6 +289,7 @@ class Calibration:
             self._objErrTol = objErrTol
             self.extCalTime = extCalTime
             self._extCapInterval = extCapInterval
+            self._staticTarget = staticTarget
             self._markerOffsets = markerOffsets
             self._gridOffset = gridOffset
             self._markerSides = markerSides
@@ -359,6 +365,7 @@ class Calibration:
                            nestMin=self._nestMin,
                            extCalTime=self.extCalTime,
                            extCapInterval=self._extCapInterval,
+                           staticTarget=self._staticTarget,
                            markerOffsets=self._markerOffsets,
                            gridOffset=self._gridOffset,
                            markerSides=self._markerSides,
@@ -435,13 +442,13 @@ class Calibration:
         objPArray = []
         imgPArray = []
         calibCount = 0
-        self._camRef.get_frame()
-        h, w = self._camRef.current_frame()[0].shape[:2]
+        currFrame = self._camRef.get_frame()
+        h, w = currFrame[0].shape[:2]
         cv2.namedWindow('Calibration Capture')
         # Capture calibration images
         while calibCount < self._intNumImages:
-            self._camRef.get_frame()
-            frameCopy = self._camRef.current_frame()[0]
+            currFrame = self._camRef.get_frame()
+            frameCopy = currFrame[0]
             cv2.imshow('Calibration Capture', frameCopy)
             userIn = cv2.waitKey(50)
             ret = None
@@ -577,9 +584,6 @@ class Calibration:
     def _calibrate_ext_slave(self):
         if __debug__:
             print 'Running in DEBUG MODE!'
-        # Setup capture file and timing list
-        # codec = cv2.VideoWriter_fourcc(*mP['capCodec'])
-        # capFile = cv2.VideoWriter('extrinSlaveCap.avi', codec, mP['capFrameRate'], (mP['capWidth'], mP['capHeight']))
         imgList = []
         timeList = []
 
@@ -589,18 +593,17 @@ class Calibration:
         startTime = time.time()
         currTime = startTime
         lastCheckTime = startTime - self._extCapInterval - 1
+        lastFrameID = '0'
         while currTime - startTime < self.extCalTime:
-            self._camRef.get_frame()
-            frameCopy = self._camRef.current_frame()[0]
+            currFrame = self._camRef.get_frame()
+            frameCopy = currFrame[0]
+            newFrameID = currFrame[1]
             currTime = time.time()
-            if currTime - lastCheckTime > self._extCapInterval:
-                # capFile.write(frameCopy)
+            if currTime - lastCheckTime > self._extCapInterval and newFrameID != lastFrameID:
+                lastFrameID = newFrameID
                 imgList.append(cv2.cvtColor(frameCopy, cv2.COLOR_BGR2GRAY))
                 timeList.append(currTime)
                 lastCheckTime = time.time()
-
-        # Release file for reading
-        # capFile.release()
 
         frameCount = 0
         numFrames = len(imgList)
@@ -634,6 +637,8 @@ class Calibration:
                             cv2.FONT_HERSHEY_PLAIN, 2, (255, 255, 255), 2)
                 cv2.imshow('Extrinsic Calibration', frameCopy)
                 cv2.waitKey(100)
+            else:
+                print 'Frame %d/%d\tUnable to find grid.' % (frameCount, numFrames)
 
         if __debug__:
             cv2.destroyWindow('Extrinsic Calibration')
@@ -655,18 +660,30 @@ class Calibration:
             reducedObjPoints = self._outside_corners(objPoints).T
             numTargets = len(foundTargets)
             targetCount = 0
+            lastRot = None
+            lastGoodRot = None
+            lastCapTime = 0
             for side, corners, capTime in foundTargets:
                 reducedCorners = self._outside_corners(corners)
-                rot, trans, objErr = self._solve_rpp(reducedObjPoints, reducedCorners)
+                if lastRot is not None and capTime - lastCapTime < 2.0 * self._extCapInterval:
+                    rot, trans, objErr = self._solve_rpp(reducedObjPoints, reducedCorners, initR=lastRot)
+                elif lastGoodRot is not None and self._staticTarget:
+                    rot, trans, objErr = self._solve_rpp(reducedObjPoints, reducedCorners, initR=lastGoodRot)
+                else:
+                    rot, trans, objErr = self._solve_rpp(reducedObjPoints, reducedCorners)
                 targetCount += 1
                 print 'Frame %d/%d Processed.' % (targetCount, numTargets)
                 if objErr < self._objErrTol:
                     transform = np.hstack((np.vstack((rot, np.zeros((1, 3)))), np.vstack((trans, 1))))
                     returnTargets.append((side, transform, capTime, objErr))
                     print 'Frame %d ObjErr = %f < Tolerance %f, valid frame.' % (targetCount, objErr, self._objErrTol)
+                    lastRot = rot.copy()
+                    lastGoodRot = rot.copy()
+                    lastCapTime = float(capTime)
                 else:
                     print 'Frame %d ObjErr = %f > Tolerance %f, discarded frame.' % (
                     targetCount, objErr, self._objErrTol)
+                    lastRot = None
             return returnTargets
         else:
             print 'Unable to find valid frames in scene capture.'
@@ -704,8 +721,8 @@ class Calibration:
         targetSides = []
         capImages = self._intNumImages
         while True and capImages:
-            self._camRef.get_frame()
-            frameCopy = self._camRef.current_frame()[0]
+            currFrame = self._camRef.get_frame()
+            frameCopy = currFrame[0]
             cv2.imshow('Target Calibration', frameCopy)
             userIn = cv2.waitKey(50)
             if userIn & 0xFF == ord('c'):
@@ -768,7 +785,8 @@ class Calibration:
                 break
 
         # Calibrate Sides wrt North face
-        greyFrame = self._camRef.current_frame()[0]
+        currFrame = self._camRef.get_frame()
+        greyFrame = currFrame[0]
         greyFrame = cv2.cvtColor(greyFrame, cv2.COLOR_BGR2GRAY)
         cv2.putText(greyFrame, 'Performing target calibration...', (10, greyFrame.shape[0] - 10),
                     cv2.FONT_HERSHEY_PLAIN, 2, (255, 255, 255), 2)
@@ -1236,11 +1254,14 @@ class Calibration:
         return returnedPoints.astype('float32')
 
     # Return pose (R, t, objErr) from input 3xn object points and 2xn image points
-    def _solve_rpp(self, objPoints, imgPoints):
+    def _solve_rpp(self, objPoints, imgPoints, initR=None):
         imgPointsUndistorted = cv2.undistortPoints(imgPoints, self.camMatrix, self.distCoefs)
         imgPointsUndistorted = np.hstack(
             (imgPointsUndistorted[:, 0, 0].reshape((-1, 1)), imgPointsUndistorted[:, 0, 1].reshape((-1, 1)))).T
-        return rpp(objPoints.copy(), imgPointsUndistorted)
+        if initR is None:
+            return rpp(objPoints.copy(), imgPointsUndistorted)
+        else:
+            return rpp(objPoints.copy(), imgPointsUndistorted, initRGuess=initR)
 
     # Takes collated data from every node and performs the final extrinsic calibration
     def _extrin_calibration(self, extrinData, binSize):
@@ -1490,5 +1511,3 @@ if __name__ == '__main__':
     # calib._write_extrin_to_file('extrinCalib.cfg')
     # ret, params = calib._read_extrin_from_file('extrinCalib.cfg')
     # calib._members_from_params('extrin', **params)
-
-    # Straight On Test 180deg, Host 77cm, 27cm; Slave 74cm, 27cm, Box 30cm

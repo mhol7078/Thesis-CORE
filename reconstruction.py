@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import threading
 import time
+from os import path
 from itertools import combinations
 from sys import exit
 from camOps import CamHandler
@@ -40,7 +41,7 @@ class Reconstruction(threading.Thread):
         # Reconstruction Params
         self.name = nodeType
         self.posList = []
-        self.rayMax = mainParams['maxRayDist']  # Maximum viewing range for each camera
+        self.rayMax = mainParams['maxRayDist']  # Maximum viewing range for each camera in mm
 
         # Run no-network calibration load
         if noNetwork and nodeType == 'Master':
@@ -55,7 +56,7 @@ class Reconstruction(threading.Thread):
         # Run intrinsic calibration only
         if mainParams['intrinCalibOnly']:
             print 'Running forced intrinsic calibration.'
-            self._calib = Calibration(self._cam, None, noNetwork=True)
+            self._calib = Calibration(self._cam, None, intrinOnly=True)
             # Close camera
             self._cam.stop()
             return
@@ -101,6 +102,7 @@ class Reconstruction(threading.Thread):
     def run(self):
         if self._net.name == 'Master':  # Master loop
             while not self._killThread:
+
                 # If capture flag load tracking data from slaves
                 if self._net.netEventDict['capture'].isSet():
                     self._master_append_local_tracker_data()
@@ -108,21 +110,61 @@ class Reconstruction(threading.Thread):
                 # If recon flag reconstruct from collected tracking data
                 if self._net.netEventDict['reconstruct'].isSet():
                     compiledData = self._master_compile_data()
-                    # savedData = shelve.open('reconData')
-                    # savedData['reconData'] = compiledData
-                    # savedData.close()
                     posData = self._master_reconstruct(compiledData, 0.1)
+                    self._write_recon_to_file(posData)
                     self.toggle_reconstruct()
-                    pass
         else:  # Slave loop
             while not self._killThread:
+                # Check see if a shutdown has been ordered by Master
+                if not self._net.isAlive():
+                    self.shutdown()
                 # If capture flag start transmitting positions
                 if self._net.netEventDict['capture'].isSet():
                     self._slave_send_tracker_data()
                 elif self._net.netEventDict['reconSync'].isSet():
                     self._net.send_comms('Success')
                     self._net.netEventDict['reconSync'].clear()
+        return
 
+    def collect_estimates(self):
+        currFrame = self._cam.get_frame()[0]
+        trackerEstimates = []
+        for tracker in self._trackers:
+            trackerEstimates.append(tracker.get_current_estimate())
+        for estimate, lockStatus in trackerEstimates:
+            if lockStatus:
+                cv2.circle(currFrame, (estimate[0], estimate[1]), 20, (0, 255, 0), 3)
+            else:
+                cv2.circle(currFrame, (estimate[0], estimate[1]), 20, (0, 0, 255), 3)
+        return currFrame
+
+    def _write_recon_to_file(self, posData, filename=None, append=False):
+        # Use default if no name given
+        if filename is None:
+            filename = 'reconstruction.csv'
+        # Open or append unique file for processing
+        if append:
+            fd = open(filename, 'a')
+        else:
+            while path.isfile(filename):
+                splitName = filename.split('.')
+                scoreIdx = splitName[0][::-1].find('_')
+                if scoreIdx != -1:
+                    counter = int(splitName[0][::-1].split('_')[0][::-1]) + 1
+                    filename = splitName[0][:-(scoreIdx + 1)] + '_' + str(counter) + '.csv'
+                else:
+                    counter = 1
+                    filename = splitName[0] + '_1' + '.csv'
+            fd = open(filename, 'w')
+        # Dump CSV variables to file
+        fd.write(time.ctime() + '\n')
+        for targNum, capTime, position in posData:
+            writeStr = repr(targNum) + ',' + repr(capTime)
+            for idx in range(len(position)):
+                writeStr += ',' + repr(position[idx])
+            writeStr += '\n'
+            fd.write(writeStr)
+        fd.close()
         return
 
     def _master_compile_data(self):
@@ -265,7 +307,7 @@ class Reconstruction(threading.Thread):
         if self._net.name == 'Slave':
             return False
         if self._net.netEventDict['reconstruct'].isSet():
-            print 'Finishing reconstruction.'
+            print 'Finished reconstruction.'
             self._net.netEventDict['reconstruct'].clear()
         else:
             print 'Starting reconstruction.'
@@ -357,14 +399,11 @@ class Reconstruction(threading.Thread):
             for idx1, idx2 in combinations(range(len(refinedObsGroup)), 2):
                 line1 = refinedObsGroup[idx1][3]
                 line2 = refinedObsGroup[idx2][3]
-                plane1 = self._calib.extrinPlanes[refinedObsGroup[idx1][1]]
-                plane2 = self._calib.extrinPlanes[refinedObsGroup[idx2][1]]
                 weighting1 = refinedObsGroup[idx1][4]
                 weighting2 = refinedObsGroup[idx2][4]
                 capTime1 = refinedObsGroup[idx1][2]
                 capTime2 = refinedObsGroup[idx2][2]
-                # pairPosEstimate = point_between_skew_lines(line1, line2, weighting1, weighting2)
-                pairPosEstimate = self._point_between_skew_rays(line1, line2, plane1, plane2, weighting1, weighting2)
+                pairPosEstimate = self._point_between_skew_rays(line1, line2, weighting1, weighting2)
                 if pairPosEstimate is not None:
                     avgCapTime = np.average([capTime1, capTime2], weights=[weighting1, weighting2])
                     avgWeight = np.mean([weighting1, weighting2])
@@ -380,19 +419,16 @@ class Reconstruction(threading.Thread):
             avgPosition = np.average(positions[:, 1:].reshape((3, -1)), axis=1, weights=weights)
             avgTime = np.average(capTimes, weights=weights)
             # Append new observation position
-            reconstructedPoints.append((refinedObsGroup[0][0], avgPosition, avgTime))
-
+            reconstructedPoints.append((refinedObsGroup[0][0], avgTime, avgPosition))
         return reconstructedPoints
 
     # Credit Dan Sunday, geomalgorithms.com
-    def _point_between_skew_rays(self, line1, line2, plane1, plane2, weighting1=None, weighting2=None):
+    def _point_between_skew_rays(self, line1, line2, weighting1=None, weighting2=None):
         eps = 1e-8
-        # Find intersection of lines and planes
-        line1Point2 = self._line_plane_intersect(line1, plane2)
-        line2Point2 = self._line_plane_intersect(line2, plane1)
-        # Return None if no valid segment endpoints
-        if line1Point2 is None or line2Point2 is None:
-            return None
+        # Extend ray out to max viewing distance
+        line1Point2 = self._extend_ray(line1)
+        line2Point2 = self._extend_ray(line2)
+
         line1Point1 = line1[:, 0].astype(np.float64)
         line2Point1 = line2[:, 0].astype(np.float64)
 
@@ -464,35 +500,22 @@ class Reconstruction(threading.Thread):
 
         return (close1 + weighting * (close2 - close1)).reshape((3, 1))
 
-    def _line_plane_intersect(self, line, plane):
-        eps = 1e-8
+    def _extend_ray(self, line):
         pointLine = line[:, 0].astype(np.float64)
-        pointPlane = plane[:, 0].astype(np.float64)
         vectLine = line[:, 1].astype(np.float64)
-        normPlane = plane[:, 1].astype(np.float64)
-
-        w = pointLine - pointPlane
-        D = np.dot(normPlane, vectLine)
-        N = -np.dot(normPlane, w)
-        # Line is either in plane or parallel to it
-        if np.fabs(D) < eps:
-            return None
-        sI = N / D
-        if sI > 0.0:  # Return segment intersection with plane
-            return (pointLine + sI * vectLine)
-        else:  # Segment intersects behind camera, employ max range instead
-            sI = self.rayMax / np.linalg.norm(vectLine)
-            return (pointLine + sI * vectLine)
+        sI = self.rayMax / np.linalg.norm(vectLine)
+        return pointLine + sI * vectLine
 
 
 if __name__ == '__main__':
     # Test script for the reconstruction module
-    savedData = shelve.open('reconData3Node')
-    compiledData = savedData['reconData']
-    savedData.close()
-
-    # visualHdl = Visualiser()
+    # savedData = shelve.open('compiledData')
+    # compiledData = savedData['compiledData']
+    # savedData.close()
+    #
+    #
+    # # # visualHdl = Visualiser()
     reconHdl = Reconstruction('Master', noNetwork=True)
-    posData = reconHdl._master_reconstruct(compiledData, 0.1)
+    # posData = reconHdl._master_reconstruct(compiledData, 0.1)
 
     pass

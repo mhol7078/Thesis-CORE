@@ -13,16 +13,15 @@ from rpputil import *
 # Output:   Numpy Tuple (R, t, err) where R = 3x3 Rotation matrix, t = 3x1 translation vector, err = projection error
 def rpp(objPoints=None, imgPoints=None, initRGuess=None, tolerance=None, epsilon=None, rotMethod=None, maxIter=None):
     # Use test data if no values given
-    if objPoints is None:
+    if objPoints is None or imgPoints is None:
         objPoints = np.array([0.0685, 0.6383, 0.4558, 0.7411, -0.7219, 0.7081, 0.7061, 0.2887, -0.9521, -0.2553,
                               0.4636, 0.0159, -0.1010, 0.2817, 0.6638, 0.1582, 0.3925, -0.7954, 0.6965, -0.7795],
                              dtype=np.float64).reshape((2, 10))
         objPoints = np.vstack((objPoints, np.zeros((1, objPoints.shape[1]))))
-
-    if imgPoints is None:
         imgPoints = np.array([-0.0168, 0.0377, 0.0277, 0.0373, -0.0824, 0.0386, 0.0317, 0.0360, -0.1015, -0.0080,
                               0.0866, 0.1179, 0.1233, 0.1035, 0.0667, 0.1102, 0.0969, 0.1660, 0.0622, 0.1608],
                              dtype=np.float64).reshape((2, 10))
+
 
     # Use defaults if no tolerance/epsilon/rotation method set set
     if tolerance is None:
@@ -434,4 +433,8 @@ def get_rotation_Y_wrt_T(v, p, t, DB, Rz=None):
 
 
 if __name__ == '__main__':
-    sol = rpp()
+    R = np.array([0.85762848, -0.31178758, 0.40897664,
+                  0.16046857, -0.59330811, -0.78881894,
+                  0.48859311, 0.74214149, -0.4588058]).reshape((3, 3))
+    sol = rpp(initRGuess=R)
+    pass

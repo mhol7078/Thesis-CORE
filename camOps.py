@@ -28,10 +28,11 @@ def onMouse(event, x, y, flags, param):
 class CamHandler(threading.Thread):
     def __init__(self, camID=None):
         threading.Thread.__init__(self)
-        # If ID is given, check if valid and open camera
         self._frame = None
         self._camLock = threading.Lock()
+        self._updateFrame = threading.Event()
         self._lastTimestamp = 0  # Time in seconds since epoch (epoch and accuracy dependent on platform)
+        self._frameID = None
         self._deltaTime = 0  # Time in seconds between camera frames
         if camID is not None:
             self._camObj = cv2.VideoCapture(camID)
@@ -39,10 +40,9 @@ class CamHandler(threading.Thread):
                 self._camObj = self._assign_cam()
         else:
             self._camObj = self._assign_cam()
-        # Lock resolution at 480p for now if possible
+        # Lock resolution at desired values
         self._camObj.set(cv2.CAP_PROP_FRAME_WIDTH, camParams['capWidth'])
         self._camObj.set(cv2.CAP_PROP_FRAME_HEIGHT, camParams['capHeight'])
-        self._updateFrame = True
         self._killThread = False
         self.setDaemon(True)
         self.start()
@@ -50,10 +50,10 @@ class CamHandler(threading.Thread):
 
     def run(self):
         while not self._killThread:
-            if self._updateFrame:
+            if not self._updateFrame.isSet():
                 self._camLock.acquire()
                 self._get_frame()
-                self._updateFrame = False
+                self._updateFrame.set()
                 self._camLock.release()
         return
 
@@ -64,9 +64,13 @@ class CamHandler(threading.Thread):
 
     def get_frame(self):
         self._camLock.acquire()
-        self._updateFrame = True
+        # Check if new frame is actually necessary or if just pulling the same frame before ordering new frame
+        if self._updateFrame.isSet() and time.time() - self._lastTimestamp > 1.0 / camParams['capFrameRate']:
+            self._updateFrame.clear()
         self._camLock.release()
-        return
+        self._updateFrame.wait()
+        # Return current frame to calling thread with ID, timestamp and
+        return self.current_frame()
 
     def _get_frame(self):
         self._camObj.grab()
@@ -74,16 +78,25 @@ class CamHandler(threading.Thread):
         self._frame = self._camObj.retrieve()[1]
         self._deltaTime = newTimestamp - self._lastTimestamp
         self._lastTimestamp = newTimestamp
+        self._frameID = str(newTimestamp)
         return
 
     def current_frame(self):
         self._camLock.acquire()
         frame = self._frame
+        frameID = self._frameID
         lastTimestamp = self._lastTimestamp
         deltaTime = self._deltaTime
         self._camLock.release()
-        return frame, lastTimestamp, deltaTime
+        return frame, frameID, lastTimestamp, deltaTime
 
+    # Resolution given as (width, height)
+    def set_resolution(self, resolution):
+        self._camLock.acquire()
+        self._camObj.set(cv2.CAP_PROP_FRAME_WIDTH, resolution[0])
+        self._camObj.set(cv2.CAP_PROP_FRAME_HEIGHT, resolution[1])
+        self._camLock.release()
+        return
     def _assign_cam(self):
         # Enumerate available cameras
         imgList = []

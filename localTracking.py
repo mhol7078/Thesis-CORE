@@ -4,6 +4,7 @@ from scipy import spatial
 import threading
 from kalmanFilt import KalmanTrack
 from HSConfig import kalmanParams, flowParams, featureParams, colourParams, trackingParams
+import time
 
 __author__ = 'Michael Holmes'
 
@@ -15,6 +16,7 @@ __author__ = 'Michael Holmes'
 # TODO: Alternative markup method (non-window) + target save
 # TODO: Outlier rejection in minimum enclosing circle calc
 # TODO: Add toggle for showing track history
+# TODO: Downsampling and Predictive Image Slicing
 # ----------------------------------------------------------------
 
 
@@ -39,10 +41,19 @@ def onMouse(event, x, y, flags, param):
 
 
 class LocalModeOne(KalmanTrack, threading.Thread):
-    def __init__(self, camRef, targetNumber):
+    def __init__(self, camRef, targetNumber, noMarkup=False):
         threading.Thread.__init__(self)
 
-        # Markup Target
+        # Temp timing variables for results
+        self.testTime = 0.
+        self.predictLoops = 0.
+        self.updateLoops = 0.
+        self.bothLoops = 0
+        self.predictRate = 0.
+        self.updateRate = 0.
+        self.bothRate = 0.
+
+        # Markup initialisation
         self._camRef = camRef
         KalmanTrack.__init__(self, **kalmanParams)
         self._currObs = np.zeros((2, 1))
@@ -55,15 +66,17 @@ class LocalModeOne(KalmanTrack, threading.Thread):
         self._colourTargetRadius = colourParams['colourTargetRadius']
         self._flowLock = False
         self._flowTrackHistoryMax = flowParams['trackLen']
-        del flowParams['trackLen']
         self._flowTracks = []
-        self._flowParams = flowParams
+        self._flowParams = flowParams.copy()
+        del self._flowParams['trackLen']
         self._featureParams = featureParams
 
         # Markup Target
         self._hsvLimits = []
-        self._markup_target()
-        del self._colourParams
+        if noMarkup:
+            self._markup_target(noMarkup=True)
+        else:
+            self._markup_target()
 
         # Update filter with initial positions, image resolution and target colour profile
         self.x[0] = self._currObs[0]
@@ -77,6 +90,8 @@ class LocalModeOne(KalmanTrack, threading.Thread):
         self._deadZone = trackingParams['deadZone']
         self._shiftMulti = trackingParams['shiftMulti']
 
+        # FrameID param to check if new image or not
+        self._lastFrameID = '0'
         # Thread params
         self._killThread = False
         self._trackingLock = threading.Lock()
@@ -87,12 +102,24 @@ class LocalModeOne(KalmanTrack, threading.Thread):
         return
 
     def run(self):
+        # Temp results variable
+        self.testTime = time.time()
+        # Thread Loop
         while not self._killThread and self._camRef.is_opened():
-            # Run local tracker, tracking target position with the filter
+            # Temp results variables
+            predictFlag = False
+            updateFlag = False
 
+            # Run local tracker, tracking target position with the filter
             # Get new image
-            self._camRef.get_frame()
-            currFrame, currTimestamp, currDeltaTime = self._camRef.current_frame()
+            currFrame, currFrameID, currTimestamp, currDeltaTime = self._camRef.get_frame()
+
+            # Check if acquired frame is different from last successful loop
+            if currFrameID == self._lastFrameID:
+                continue
+            else:
+                self._lastFrameID = currFrameID
+
             # Update tracker elapsed times
             self.update_elapsed_counters(currDeltaTime)
 
@@ -102,17 +129,20 @@ class LocalModeOne(KalmanTrack, threading.Thread):
                 self._currTimestamp = currTimestamp
                 self.predict()
                 self._targetRead = False
+                predictFlag = True
                 self._trackingLock.release()
 
-            # Run update stage if update increment has elapsed
+            # Run update stage if update increment has elapsed and new frame is acquired
             if self.update_stage_elapsed():
                 self._new_obs_from_im(currFrame.copy())
                 if self.targetLocked:
                     self._trackingLock.acquire()
                     self._currTimestamp = currTimestamp
-                    self.update(self.get_current_obs())
+                    self.update(self._currObs)
                     self._targetRead = False
+                    updateFlag = True
                     self._trackingLock.release()
+
 
             # Push latest filter estimate to image window along with new image
             # if __debug__:
@@ -127,6 +157,13 @@ class LocalModeOne(KalmanTrack, threading.Thread):
                     #     titleString = 'Target %d' % self._targetNumber
                     #     cv2.imshow(titleString, frameCopy)
 
+            if predictFlag and updateFlag:
+                self.bothLoops += 1
+            elif predictFlag:
+                self.predictLoops += 1
+            elif updateFlag:
+                self.updateLoops += 1
+        self.testTime = time.time() - self.testTime
         return
 
     def stop(self):
@@ -144,32 +181,36 @@ class LocalModeOne(KalmanTrack, threading.Thread):
             packet = None
         return packet
 
-    def _markup_target(self):
-        global target0, frameImg
-        cv2.waitKey(3000)
+    def _markup_target(self, noMarkup=False):
+        global target0
+        target0 = [(-1, -1), (-1, -1), False, (-1, -1)]
+        cv2.waitKey(1000)
         self._camRef.get_frame()
         self._camRef.get_frame()  # Doubled to initialise time-step
         currFrame = self._camRef.current_frame()[0]
         self.maxUV = (currFrame.shape[1], currFrame.shape[0])
 
         # Select target region
-        cv2.imshow('Choose Target', currFrame)
-        cv2.setMouseCallback('Choose Target', onMouse)
-        while target0[1][0] == -1:
-            currFrame = self._camRef.current_frame()[0]
-            if not target0[2]:
-                cv2.imshow('Choose Target', currFrame)
-                self._camRef.get_frame()
-            else:
-                if not (target0[3][0] == -1):
-                    frameCopy = currFrame.copy()
-                    cv2.rectangle(frameCopy, target0[0], target0[3], (0, 255, 0))
-                    cv2.imshow('Choose Target', frameCopy)
-                else:
+        if noMarkup:
+            markupPoint = (int(self.maxUV[0] / 2), int(self.maxUV[1] / 2))
+            target0 = [markupPoint, markupPoint, False, (-1, -1)]
+        else:
+            cv2.imshow('Choose Target', currFrame)
+            cv2.setMouseCallback('Choose Target', onMouse)
+            while target0[1][0] == -1:
+                currFrame = self._camRef.get_frame()[0]
+                if not target0[2]:
                     cv2.imshow('Choose Target', currFrame)
-            if cv2.waitKey(50) & 0xFF == ord(' '):
-                cv2.destroyWindow('Choose Target')
-                return
+                else:
+                    if not (target0[3][0] == -1):
+                        frameCopy = currFrame.copy()
+                        cv2.rectangle(frameCopy, target0[0], target0[3], (0, 255, 0))
+                        cv2.imshow('Choose Target', frameCopy)
+                    else:
+                        cv2.imshow('Choose Target', currFrame)
+                if cv2.waitKey(50) & 0xFF == ord(' '):
+                    cv2.destroyWindow('Choose Target')
+                    return
         bounds = self._set_roi(target0)
         self._currObs[0] = bounds[2]
         self._currObs[1] = bounds[5]
@@ -204,7 +245,7 @@ class LocalModeOne(KalmanTrack, threading.Thread):
 
     def _set_hsv_limits(self, bgr):
         # Correct for lone pixel selection
-        if len(bgr) == 3:
+        if bgr.size == 3:
             bgr = bgr.reshape(1, 1, 3)
         hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
         hueMean = np.mean(hsv[:, :, 0])
@@ -230,8 +271,12 @@ class LocalModeOne(KalmanTrack, threading.Thread):
             sat = 255
         return int(sat)
 
-    def get_current_obs(self):
-        return self._currObs
+    def get_current_estimate(self):
+        self._trackingLock.acquire()
+        currX = self.x[0:2]
+        currLock = self.targetLocked
+        self._trackingLock.release()
+        return currX, currLock
 
     def _new_obs_from_im(self, image):
         # Get new measurement from colour extraction
@@ -359,3 +404,66 @@ class LocalModeOne(KalmanTrack, threading.Thread):
 
         self._flowLock = False
         return None
+
+
+if __name__ == '__main__':
+    from camOps import CamHandler
+
+    myCam = CamHandler(1)
+    numTests = 20
+    maxTargets = 5
+    fd = open('localModeResults.txt', 'w')
+    fd.write(str(numTests) + '\n')
+    fd.write(str(maxTargets) + '\n')
+    for targNum in range(maxTargets):
+        print 'Num Targets %d' % (targNum + 1)
+        fd.write(str(targNum + 1) + '\n')
+        meanPredictRate = [x for x in range(targNum + 1)]
+        meanPredictCount = list(meanPredictRate)
+        meanUpdateRate = list(meanPredictRate)
+        meanUpdateCount = list(meanPredictRate)
+        meanBothRate = list(meanPredictRate)
+        meanBothCount = list(meanPredictRate)
+        for idx in range(numTests):
+            myTrackers = []
+            for idx2 in range(targNum + 1):
+                myTrackers.append(LocalModeOne(myCam, 0, noMarkup=True))
+            startTime = time.time()
+            currTime = startTime
+            while currTime - startTime < 5.0:
+                cv2.waitKey(50)
+                currTime = time.time()
+            for tracker in myTrackers:
+                tracker.stop()
+                while tracker.isAlive():
+                    pass
+
+            print 'Test #%d/%d' % (idx + 1, numTests)
+
+            for idx, tracker in enumerate(myTrackers):
+                tracker.predictRate = 0 if tracker.predictLoops == 0 else (
+                1 / (tracker.testTime / tracker.predictLoops))
+                tracker.updateRate = 0 if tracker.updateLoops == 0 else (1 / (tracker.testTime / tracker.updateLoops))
+                tracker.bothRate = 0 if tracker.bothLoops == 0 else (1 / (tracker.testTime / tracker.bothLoops))
+
+                print 'Loop Rates (Predict, Update, Both): %f/%f/%f Hz' % (
+                tracker.predictRate, tracker.updateRate, tracker.bothRate)
+                if tracker.predictRate != 0:
+                    meanPredictRate[idx] += tracker.predictRate
+                    meanPredictCount[idx] += 1
+                if tracker.updateRate != 0:
+                    meanUpdateRate[idx] += tracker.updateRate
+                    meanUpdateCount[idx] += 1
+                if tracker.bothRate != 0:
+                    meanBothRate[idx] += tracker.bothRate
+                    meanBothCount[idx] += 1
+
+        for idx in range(len(meanPredictCount)):
+            meanPredictRate[idx] = 0 if meanPredictCount[idx] == 0 else meanPredictRate[idx] / meanPredictCount[idx]
+            meanUpdateRate[idx] = 0 if meanUpdateCount[idx] == 0 else meanUpdateRate[idx] / meanUpdateCount[idx]
+            meanBothRate[idx] = 0 if meanBothCount[idx] == 0 else meanBothRate[idx] / meanBothCount[idx]
+            print 'Mean Loop Rates (Predict, Update, Both, Count): %f/%f/%f Hz' % (
+            meanPredictRate[idx], meanUpdateRate[idx], meanBothRate[idx])
+            fd.write(str(meanPredictRate[idx]) + ',' + str(meanUpdateRate[idx]) + ',' + str(meanBothRate[idx]) + '\n')
+    fd.close()
+    myCam.stop()

@@ -53,6 +53,15 @@ def main():
 
 if __name__ == '__main__':
     main()
+    # Camera Positions Parallel Trial:
     # Pig X:0,Y:310,Z:1000
     # Small Cube: X:1000,Y:380,Z:2000
     # Large Cube: X:0,Y:230,Z:3000
+
+    # Camera Positions Wide Trial:
+    # Pig X:0,Y:435,Z:1000
+    # Kettle: X:400,Y:435,Z:2000
+    # Hotpack: X:-300,Y:435,Z:3000
+    # Cam 1: X:0,Y:0,Z:0, Straight on
+    # Cam 2: X:870,Y:75,Z:700, 60deg left
+    # Cam 3: X:-850,Y:75,Z:640, 60deg right

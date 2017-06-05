@@ -11,12 +11,12 @@ __author__ = 'Michael Holmes'
 
 # Configuration Filenames
 masterConfigFiles = dict(commonFilename='commonCalib.cfg',
-                         intrinFilename='intrinCalib1-480.cfg',
-                         extrinFilename='extrinCalib3Parallel.cfg',
+                         intrinFilename='intrinCalib-1.cfg',
+                         extrinFilename='extrinCalib-Wide.cfg',
                          targetFilename='targetCalib.cfg')
 
 slaveConfigFiles = dict(commonFilename='commonCalib.cfg',
-                        intrinFilename='intrinCalib3-480.cfg')
+                        intrinFilename='intrinCalib-3.cfg')
 
 # Miscellaneous Parameters
 mainParams = dict(intrinCalibOnly=0,
@@ -25,7 +25,7 @@ mainParams = dict(intrinCalibOnly=0,
                   maxRayDist=15000)
 
 # Local Tracking Parameters
-trackingParams = dict(numTargets=3,
+trackingParams = dict(numTargets=1,
                       maxFailedCycles=5,
                       deadZone=20,
                       shiftMulti=2)
@@ -91,9 +91,9 @@ calibExtParams = dict(extPatternType='Square',
                       gridOffset=0.21,
                       nestMin=4,
                       objErrTol=1.0,
-                      extCalTime=15.0,
+                      extCalTime=2.0,
                       extCapInterval=0.1,
-                      staticTarget=0,
+                      staticTarget=1,
                       markerSides=dict(N=(6, 1),
                                        S=(5, 2),
                                        E=(4, 3),

@@ -366,9 +366,10 @@ class Reconstruction(threading.Thread):
                 obsGroups.append((newObGroup, newObGroupTiming))
                 lastGroupMaxIdx = idx + idxOffset
             idx += 1
-        # Collapse node-multiples in groups according to weightings
+        # Reconstruct target in 3D for each time bin
         reconstructedPoints = []
         for obsGroup in obsGroups:
+            # Collapse node-multiples in groups according to weightings
             addrSets = {}
             for idx, timeWeight in zip(obsGroup[0], obsGroup[1]):
                 idxSet = compiledData[idx]
